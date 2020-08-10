@@ -1,6 +1,4 @@
-mod amphis_error;
-mod fptree;
-mod request_handler;
+extern crate amphis;
 
 //use std::sync::mpsc;
 //use std::sync::Arc;
@@ -17,22 +15,21 @@ fn main() {
     */
     let num_elements = 1025;
 
-    let handler = request_handler::RequestHandler::new();
+    let kvs = amphis::kvs::KVS::new();
     for i in 0..num_elements {
         let key = "k".to_string() + &i.to_string();
         let value = "v".to_string() + &i.to_string();
-        handler
-            .insert(&key.as_bytes().to_vec(), &value.as_bytes().to_vec())
+        kvs.insert(&key.as_bytes().to_vec(), &value.as_bytes().to_vec())
             .unwrap();
     }
 
     /*
-    let handler = Arc::new(request_handler::RequestHandler::new());
+    let kvs = Arc::new(amphis::kvs::KVS::new());
 
     for i in 0..n_jobs {
         let key = "k".to_string() + &i.to_string();
         let value = "v".to_string() + &i.to_string();
-        let h = handler.clone();
+        let h = kvs.clone();
 
         let tx = tx.clone();
         pool.execute(move || {
@@ -47,7 +44,7 @@ fn main() {
     for i in 0..num_elements {
         let key = format!("{}{}", "k", (&*i.to_string()));
         let expected = format!("{}{}", "v", (&*i.to_string()));
-        match handler.get(&key.as_bytes().to_vec()).unwrap() {
+        match kvs.get(&key.as_bytes().to_vec()).unwrap() {
             Some(value) => {
                 let actual = String::from_utf8(value.to_vec()).unwrap();
 
