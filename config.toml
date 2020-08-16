@@ -1,0 +1,5 @@
+data_dir = 'data'
+
+[fptree_config]
+fanout = 3
+num_slot = 32
