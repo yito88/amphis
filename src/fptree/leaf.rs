@@ -4,41 +4,25 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::rc::Rc;
 
+use super::leaf_manager::LeafHeader;
+use super::leaf_manager::LeafManager;
+use super::leaf_manager::NUM_SLOT;
 use super::node::Node;
 
-// TODO: parameterize them
-const NUM_SLOT: usize = 32;
-
 pub struct Leaf {
-    bitmap: Vec<u8>,
+    leaf_manager: Rc<RefCell<LeafManager>>,
+    header: LeafHeader,
+    id: usize,
     next: Option<Rc<RefCell<dyn Node>>>,
-    fingerprints: Vec<u8>,
-    data: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl std::fmt::Display for Leaf {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "bitmap: {:?}, fingerprints: {:?}, data {:?}",
-            self.bitmap, self.fingerprints, self.data
-        )
+        write!(f, "id {}, header {}", self.id, self.header)
     }
 }
 
 impl Node for Leaf {
-    fn is_inner(&self) -> bool {
-        false
-    }
-
-    fn is_leaf(&self) -> bool {
-        true
-    }
-
-    fn need_split(&self) -> bool {
-        self.bitmap.iter().all(|&x| x == 0xFF)
-    }
-
     fn get_next(&self) -> Option<Rc<RefCell<dyn Node>>> {
         match &self.next {
             Some(rc) => Some(Rc::clone(&rc)),
@@ -51,135 +35,139 @@ impl Node for Leaf {
     }
 
     // TODO: error handling
-    fn insert(&mut self, key: &Vec<u8>, value: &Vec<u8>) -> Option<Vec<u8>> {
+    fn insert(
+        &mut self,
+        key: &Vec<u8>,
+        value: &Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, std::io::Error> {
         let mut ret: Option<Vec<u8>> = None;
-        if self.need_split() {
-            let split_key = self.split();
+        let data_size = key.len() + value.len();
+        if self.header.need_split(data_size) {
+            let split_key = self.split()?;
             let new_leaf = self.get_next().unwrap();
             if split_key < *key {
-                new_leaf.borrow_mut().insert(key, value);
+                new_leaf.borrow_mut().insert(key, value)?;
             }
             ret = Some(split_key);
         }
 
-        if let Some(slot) = self.get_empty_slot() {
-            self.set_slot(slot);
-            self.fingerprints[slot] = self.calc_key_hash(key);
-            if slot < self.data.len() {
-                self.data[slot] = (key.clone(), value.clone());
-            } else {
-                // append a new data
-                self.data.insert(slot, (key.clone(), value.clone()));
-            }
+        if let Some(slot) = self.header.get_empty_slot() {
+            let tail_offset = self.leaf_manager.borrow_mut().write_data(
+                self.id,
+                self.header.get_tail_offset(),
+                key,
+                value,
+            )?;
+
+            self.header.set_slot(slot);
+            self.header.set_tail_offset(tail_offset);
+            self.header.set_fingerprint(slot, calc_key_hash(key));
+            self.header
+                .set_kv_info(slot, tail_offset, key.len(), value.len());
+            // TODO: CRc
+            self.leaf_manager
+                .borrow_mut()
+                .update_header(self.id, &self.header)?;
         }
 
         trace!("Leaf: {}", self);
-        ret
+        Ok(ret)
     }
 
     fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         trace!("Read from Leaf: {}", self);
-        let hash = self.calc_key_hash(key);
-        for (i, fp) in self.fingerprints.iter().enumerate() {
-            if self.is_slot_set(i) && *fp == hash {
-                if self.data[i].0 == *key {
-                    return Ok(Some(self.data[i].1.clone()));
+        let hash = calc_key_hash(key);
+        for (slot, fp) in self.header.get_fingerprints().iter().enumerate() {
+            if self.header.is_slot_set(slot) && *fp == hash {
+                let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+                let (actual_key, value) = self.leaf_manager.borrow().read_data(
+                    self.id,
+                    data_offset,
+                    key_size,
+                    value_size,
+                )?;
+                if actual_key == *key {
+                    return Ok(Some(value.clone()));
                 }
             }
         }
-
         Ok(None)
     }
 
-    // TODO: error handling
-    fn split(&mut self) -> Vec<u8> {
-        let mut new_leaf = Leaf::new();
-        let mut keys: Vec<Vec<u8>> = Vec::with_capacity(NUM_SLOT);
+    fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
+        let mut new_leaf = Leaf::new(Rc::clone(&self.leaf_manager))?;
 
-        for kv in &self.data {
-            keys.push(kv.0.clone());
+        let mut keys: Vec<Vec<u8>> = Vec::with_capacity(NUM_SLOT);
+        for slot in 0..NUM_SLOT {
+            if self.header.is_slot_set(slot) {
+                let (data_offset, key_size, _value_size) = self.header.get_kv_info(slot);
+                let key = self
+                    .leaf_manager
+                    .borrow()
+                    .read_key(self.id, data_offset, key_size)?;
+                keys.push(key.clone());
+            }
         }
         keys.sort();
-        let split_key = keys[NUM_SLOT / 2].clone();
+        let new_first = keys.len() / 2;
+        let split_key = keys[new_first].clone();
 
-        for k in keys.split_off(NUM_SLOT / 2) {
-            let hash = self.calc_key_hash(&k);
-            let mut removed_idx: Vec<usize> = Vec::new();
-            for (i, fp) in self.fingerprints.iter().enumerate() {
+        for k in keys.split_off(new_first) {
+            let hash = calc_key_hash(&k);
+            let mut removed_slot: Option<usize> = None;
+            for (slot, fp) in self.header.get_fingerprints().iter().enumerate() {
                 if *fp == hash {
-                    if self.data[i].0 == k {
-                        removed_idx.push(i);
-                        new_leaf.insert(&k, &self.data[i].1);
+                    let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+                    let (actual_key, value) = self.leaf_manager.borrow().read_data(
+                        self.id,
+                        data_offset,
+                        key_size,
+                        value_size,
+                    )?;
+                    if actual_key == k {
+                        removed_slot = Some(slot);
+                        new_leaf.insert(&k, &value.clone())?;
+                        break;
                     }
                 }
             }
-            for idx in removed_idx {
-                self.unset_slot(idx);
+            if let Some(slot) = removed_slot {
+                self.header.unset_slot(slot);
             }
         }
         trace!("split existing leaf: {}", self);
         trace!("new leaf: {}", new_leaf);
         trace!("split_key: {:?}", split_key.clone());
+        self.header.set_next(new_leaf.id);
         self.next = Some(Rc::new(RefCell::new(new_leaf)));
 
-        split_key
+        Ok(split_key)
     }
 }
 
 impl Leaf {
-    pub fn new() -> Self {
-        Leaf {
-            bitmap: vec![0; NUM_SLOT / 8],
+    pub fn new(leaf_manager: Rc<RefCell<LeafManager>>) -> Result<Self, std::io::Error> {
+        let id = leaf_manager.borrow_mut().get_free_leaf()?;
+
+        Ok(Leaf {
+            leaf_manager: leaf_manager,
+            header: LeafHeader::new(),
+            id: id,
             next: None,
-            fingerprints: vec![0; NUM_SLOT],
-            data: Vec::with_capacity(NUM_SLOT),
-        }
-    }
-
-    fn calc_key_hash(&self, key: &Vec<u8>) -> u8 {
-        let mut hasher = DefaultHasher::new();
-        for b in key {
-            hasher.write_u8(*b);
-        }
-
-        hasher.finish() as u8
-    }
-
-    fn get_empty_slot(&self) -> Option<usize> {
-        for (i, slots) in self.bitmap.iter().enumerate() {
-            if *slots == 0xFF {
-                continue;
-            }
-
-            for offset in 0..8 {
-                if slots & (1 << offset) == 0 {
-                    return Some(i * 8 + offset);
-                }
-            }
-        }
-        None
-    }
-
-    fn is_slot_set(&self, slot: usize) -> bool {
-        let idx = slot / 8;
-        let offset = slot % 8;
-
-        self.bitmap[idx] & (1 << offset) != 0
-    }
-
-    fn set_slot(&mut self, slot: usize) {
-        let idx = slot / 8;
-        let offset = slot % 8;
-        self.bitmap[idx] |= 1 << offset;
-    }
-
-    fn unset_slot(&mut self, slot: usize) {
-        let idx = slot / 8;
-        let offset = slot % 8;
-        self.bitmap[idx] &= 0xFF ^ (1 << offset);
+        })
     }
 }
 
+fn calc_key_hash(key: &Vec<u8>) -> u8 {
+    let mut hasher = DefaultHasher::new();
+    for b in key {
+        hasher.write_u8(*b);
+    }
+
+    hasher.finish() as u8
+}
+
+/*
 #[cfg(test)]
 mod tests {
     use crate::fptree::leaf::Leaf;
@@ -290,3 +278,4 @@ mod tests {
         assert!(exists);
     }
 }
+*/

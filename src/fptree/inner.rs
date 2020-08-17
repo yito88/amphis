@@ -20,18 +20,6 @@ impl std::fmt::Display for Inner {
 }
 
 impl Node for Inner {
-    fn is_inner(&self) -> bool {
-        true
-    }
-
-    fn is_leaf(&self) -> bool {
-        false
-    }
-
-    fn need_split(&self) -> bool {
-        self.keys.len() > FANOUT
-    }
-
     fn get_next(&self) -> Option<Rc<RefCell<dyn Node>>> {
         match &self.next {
             Some(rc) => Some(Rc::clone(&rc)),
@@ -52,11 +40,14 @@ impl Node for Inner {
         }
     }
 
-    //TODO: error handling
-    fn insert(&mut self, key: &Vec<u8>, value: &Vec<u8>) -> Option<Vec<u8>> {
+    fn insert(
+        &mut self,
+        key: &Vec<u8>,
+        value: &Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, std::io::Error> {
         let mut ret: Option<Vec<u8>> = None;
         let child = self.get_child(key).unwrap();
-        let opt_split_key = child.borrow_mut().insert(key, value);
+        let opt_split_key = child.borrow_mut().insert(key, value)?;
 
         if let Some(split_key) = opt_split_key {
             let new_child = child.borrow().get_next().unwrap();
@@ -74,11 +65,11 @@ impl Node for Inner {
             }
 
             if self.need_split() {
-                ret = Some(self.split());
+                ret = Some(self.split()?);
             }
         }
 
-        ret
+        Ok(ret)
     }
 
     fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
@@ -88,7 +79,7 @@ impl Node for Inner {
         }
     }
 
-    fn split(&mut self) -> Vec<u8> {
+    fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
         let new_keys = self.keys.split_off((FANOUT + 1) / 2);
         let split_key = new_keys.first().unwrap().clone();
         let new_children = self.children.split_off((FANOUT + 1) / 2 + 1);
@@ -108,7 +99,7 @@ impl Node for Inner {
         trace!("split_key: {:?}", split_key.clone());
         self.next = Some(Rc::new(RefCell::new(new_inner)));
 
-        split_key
+        Ok(split_key)
     }
 }
 
@@ -119,6 +110,10 @@ impl Inner {
             next: None,
             children: Vec::with_capacity(FANOUT),
         }
+    }
+
+    fn need_split(&self) -> bool {
+        self.keys.len() > FANOUT
     }
 
     pub fn add_key(&mut self, key: &Vec<u8>) {

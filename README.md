@@ -14,7 +14,7 @@ An embedded key-value store
 
 - FPTree
   - [x] B+Tree
-  - [ ] Leaf file
+  - [x] Leaf file
   - [ ] Concurrency
   - [ ] Flush (converted to SSTable)
   - [ ] Recovery

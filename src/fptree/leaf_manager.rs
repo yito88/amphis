@@ -10,18 +10,22 @@ use std::io::ErrorKind;
 use crate::config::Config;
 
 // TODO: parameterize them
+pub const NUM_SLOT: usize = 32;
 const NUM_ALLOCATION: usize = 16;
 const LEAF_SIZE: usize = 256 * 1024;
-
-const NUM_SLOT: usize = 32;
 
 const LEN_BITMAP: usize = NUM_SLOT / 8;
 const LEN_NEXT: usize = 4;
 const LEN_TAIL_OFFSET: usize = 4;
 const LEN_FINGERPRINTS: usize = NUM_SLOT;
 const LEN_KV_INFO: usize = NUM_SLOT * std::mem::size_of::<KVInfo>();
-const LEAF_HEADER_SIZE: usize =
-    LEN_BITMAP + LEN_NEXT + LEN_TAIL_OFFSET + LEN_FINGERPRINTS + LEN_KV_INFO;
+const LEN_HEADER_REDUNDANCY: usize = 8 * 3; // bincode needs 8 bytes per vector
+const LEAF_HEADER_SIZE: usize = LEN_BITMAP
+    + LEN_NEXT
+    + LEN_TAIL_OFFSET
+    + LEN_FINGERPRINTS
+    + LEN_KV_INFO
+    + LEN_HEADER_REDUNDANCY;
 const LEN_SIZE: usize = 4;
 const LEN_CRC: usize = 4;
 const LEN_REDUNDANCY: usize = LEN_SIZE + LEN_CRC;
@@ -35,38 +39,18 @@ pub struct LeafManager {
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct LeafHeader {
-    pub bitmap: [u8; NUM_SLOT / 8],
-    pub next: u32,
-    pub tail_offset: u32,
-    pub fingerprints: [u8; NUM_SLOT],
-    pub kv_info: [KVInfo; NUM_SLOT],
+    bitmap: Vec<u8>,
+    next: u32,
+    tail_offset: u32,
+    fingerprints: Vec<u8>,
+    kv_info: Vec<KVInfo>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Copy, Debug)]
 pub struct KVInfo {
-    pub offset: u32,
-    pub key_size: u32,
-    pub value_size: u32,
-}
-
-impl std::fmt::Display for LeafHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "bitmap: {:?}, next: {}, fingerprints: {:?}, kv_info: {:?}",
-            self.bitmap, self.next, self.fingerprints, self.kv_info
-        )
-    }
-}
-
-impl std::fmt::Display for KVInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "[offset: {}, key_size: {}, value_size {}]",
-            self.offset, self.key_size, self.value_size
-        )
-    }
+    offset: u32,
+    key_size: u32,
+    value_size: u32,
 }
 
 impl LeafManager {
@@ -226,12 +210,12 @@ impl LeafManager {
 
         let mut data: Vec<u8> = Vec::with_capacity(data_size);
         data.extend(key);
-        data.extend(&(key.len() as u32).to_be_bytes());
-        data.extend(&self.calc_crc(key).to_be_bytes());
+        data.extend(&(key.len() as u32).to_le_bytes());
+        data.extend(&self.calc_crc(key).to_le_bytes());
 
         data.extend(value);
-        data.extend(&(value.len() as u32).to_be_bytes());
-        data.extend(&self.calc_crc(value).to_be_bytes());
+        data.extend(&(value.len() as u32).to_le_bytes());
+        data.extend(&self.calc_crc(value).to_le_bytes());
 
         mmap.copy_from_slice(&data);
         mmap.flush()?;
@@ -242,15 +226,15 @@ impl LeafManager {
     fn calc_crc(&self, data: &Vec<u8>) -> u32 {
         let mut digest = crc32::Digest::new(crc32::IEEE);
         digest.write(data);
-        digest.write(&(data.len() as u32).to_be_bytes());
+        digest.write(&(data.len() as u32).to_le_bytes());
 
         digest.sum32()
     }
 
     fn check_crc(&self, bytes: &[u8]) -> Result<(), std::io::Error> {
         let len = bytes.len();
-        let crc = u32::from_be_bytes(bytes[(len - LEN_CRC)..len].try_into().unwrap());
-        let size = u32::from_be_bytes(
+        let crc = u32::from_le_bytes(bytes[(len - LEN_CRC)..len].try_into().unwrap());
+        let size = u32::from_le_bytes(
             bytes[(len - LEN_REDUNDANCY)..(len - LEN_CRC)]
                 .try_into()
                 .unwrap(),
@@ -269,14 +253,10 @@ impl LeafManager {
 impl LeafHeader {
     pub fn new() -> Self {
         LeafHeader {
-            bitmap: [0; NUM_SLOT / 8],
+            bitmap: vec![0u8; NUM_SLOT / 8],
             next: 0u32,
-            fingerprints: [0u8; NUM_SLOT],
-            kv_info: [KVInfo {
-                offset: 0,
-                key_size: 0,
-                value_size: 0,
-            }; NUM_SLOT],
+            fingerprints: vec![0u8; NUM_SLOT],
+            kv_info: vec![KVInfo::new(); NUM_SLOT],
             tail_offset: LEAF_SIZE as u32,
         }
     }
@@ -328,8 +308,16 @@ impl LeafHeader {
         self.next = next_id as u32;
     }
 
+    pub fn get_tail_offset(&self) -> usize {
+        self.tail_offset as usize
+    }
+
     pub fn set_tail_offset(&mut self, data_offset: usize) {
         self.tail_offset = data_offset as u32;
+    }
+
+    pub fn get_fingerprints(&self) -> &Vec<u8> {
+        &self.fingerprints
     }
 
     pub fn set_fingerprint(&mut self, slot: usize, hash: u8) {
@@ -337,11 +325,7 @@ impl LeafHeader {
     }
 
     pub fn get_kv_info(&self, slot: usize) -> (usize, usize, usize) {
-        let data_offset = self.kv_info[slot].offset as usize;
-        let key_size = self.kv_info[slot].key_size as usize;
-        let value_size = self.kv_info[slot].value_size as usize;
-
-        (data_offset, key_size, value_size)
+        self.kv_info[slot].get()
     }
 
     pub fn set_kv_info(
@@ -351,8 +335,50 @@ impl LeafHeader {
         key_size: usize,
         value_size: usize,
     ) {
-        self.kv_info[slot].offset = data_offset as u32;
-        self.kv_info[slot].key_size = key_size as u32;
-        self.kv_info[slot].value_size = value_size as u32;
+        self.kv_info[slot].set(data_offset, key_size, value_size);
+    }
+}
+
+impl KVInfo {
+    pub fn new() -> Self {
+        KVInfo {
+            offset: 0,
+            key_size: 0,
+            value_size: 0,
+        }
+    }
+
+    pub fn get(&self) -> (usize, usize, usize) {
+        (
+            self.offset as usize,
+            self.key_size as usize,
+            self.value_size as usize,
+        )
+    }
+
+    pub fn set(&mut self, offset: usize, key_size: usize, value_size: usize) {
+        self.offset = offset as u32;
+        self.key_size = key_size as u32;
+        self.value_size = value_size as u32;
+    }
+}
+
+impl std::fmt::Display for LeafHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "bitmap: {:?}, next: {}, fingerprints: {:?}, kv_info: {:?}",
+            self.bitmap, self.next, self.fingerprints, self.kv_info
+        )
+    }
+}
+
+impl std::fmt::Display for KVInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "[offset: {}, key_size: {}, value_size {}]",
+            self.offset, self.key_size, self.value_size
+        )
     }
 }

@@ -15,7 +15,10 @@ fn main() {
     */
     let num_elements = 1025;
 
-    let kvs = amphis::kvs::KVS::new();
+    let kvs = match amphis::kvs::KVS::new() {
+        Ok(s) => s,
+        Err(e) => panic!(e),
+    };
     for i in 0..num_elements {
         let key = "k".to_string() + &i.to_string();
         let value = "v".to_string() + &i.to_string();
