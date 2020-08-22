@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crc::{crc32, Hasher32};
 use log::{trace, warn};
 use memmap::{MmapMut, MmapOptions};
@@ -7,7 +8,8 @@ use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 
-use crate::config::Config;
+#[cfg(test)]
+use mockall::automock;
 
 // TODO: parameterize them
 pub const NUM_SLOT: usize = 32;
@@ -19,13 +21,8 @@ const LEN_NEXT: usize = 4;
 const LEN_TAIL_OFFSET: usize = 4;
 const LEN_FINGERPRINTS: usize = NUM_SLOT;
 const LEN_KV_INFO: usize = NUM_SLOT * std::mem::size_of::<KVInfo>();
-const LEN_HEADER_REDUNDANCY: usize = 8 * 3; // bincode needs 8 bytes per vector
-const LEAF_HEADER_SIZE: usize = LEN_BITMAP
-    + LEN_NEXT
-    + LEN_TAIL_OFFSET
-    + LEN_FINGERPRINTS
-    + LEN_KV_INFO
-    + LEN_HEADER_REDUNDANCY;
+const LEAF_HEADER_SIZE: usize =
+    LEN_BITMAP + LEN_NEXT + LEN_TAIL_OFFSET + LEN_FINGERPRINTS + LEN_KV_INFO + LEN_CRC;
 const LEN_SIZE: usize = 4;
 const LEN_CRC: usize = 4;
 const LEN_REDUNDANCY: usize = LEN_SIZE + LEN_CRC;
@@ -39,20 +36,21 @@ pub struct LeafManager {
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct LeafHeader {
-    bitmap: Vec<u8>,
+    bitmap: [u8; NUM_SLOT / 8],
     next: u32,
     tail_offset: u32,
-    fingerprints: Vec<u8>,
-    kv_info: Vec<KVInfo>,
+    fingerprints: [u8; NUM_SLOT],
+    kv_info: [KVInfo; NUM_SLOT],
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Copy, Debug)]
-pub struct KVInfo {
+struct KVInfo {
     offset: u32,
     key_size: u32,
     value_size: u32,
 }
 
+#[cfg_attr(test, automock)]
 impl LeafManager {
     pub fn new(config: &Config) -> Result<Self, std::io::Error> {
         match std::fs::create_dir_all(&config.data_dir) {
@@ -86,7 +84,7 @@ impl LeafManager {
         })
     }
 
-    pub fn get_free_leaf(&mut self) -> Result<usize, std::io::Error> {
+    pub fn get_free_leaf(&mut self) -> Result<(usize, LeafHeader), std::io::Error> {
         if self.free_leaves.is_empty() {
             self.allocate_new_leaves()?;
         }
@@ -98,7 +96,7 @@ impl LeafManager {
         self.header_mmap.push(self.mmap_header(index)?);
 
         trace!("New leaf is allocated: {}", index);
-        Ok(index)
+        Ok((index, LeafHeader::new()))
     }
 
     fn allocate_new_leaves(&mut self) -> Result<(), std::io::Error> {
@@ -128,7 +126,7 @@ impl LeafManager {
 
     pub fn update_header(&mut self, id: usize, header: &LeafHeader) -> Result<(), std::io::Error> {
         let mmap = &mut self.header_mmap[id];
-        let encoded: Vec<u8> = match bincode::serialize(header) {
+        let mut encoded: Vec<u8> = match bincode::serialize(header) {
             Ok(b) => b,
             // TODO: replace with an amphis error
             Err(_) => {
@@ -138,6 +136,7 @@ impl LeafManager {
                 ))
             }
         };
+        encoded.extend(&calc_crc(&encoded).to_le_bytes());
         mmap.copy_from_slice(&encoded);
         mmap.flush()?;
 
@@ -211,24 +210,16 @@ impl LeafManager {
         let mut data: Vec<u8> = Vec::with_capacity(data_size);
         data.extend(key);
         data.extend(&(key.len() as u32).to_le_bytes());
-        data.extend(&self.calc_crc(key).to_le_bytes());
+        data.extend(&calc_crc(key).to_le_bytes());
 
         data.extend(value);
         data.extend(&(value.len() as u32).to_le_bytes());
-        data.extend(&self.calc_crc(value).to_le_bytes());
+        data.extend(&calc_crc(value).to_le_bytes());
 
         mmap.copy_from_slice(&data);
         mmap.flush()?;
 
         Ok(offset - data_size)
-    }
-
-    fn calc_crc(&self, data: &Vec<u8>) -> u32 {
-        let mut digest = crc32::Digest::new(crc32::IEEE);
-        digest.write(data);
-        digest.write(&(data.len() as u32).to_le_bytes());
-
-        digest.sum32()
     }
 
     fn check_crc(&self, bytes: &[u8]) -> Result<(), std::io::Error> {
@@ -241,7 +232,7 @@ impl LeafManager {
         );
         let data = bytes[0..size as usize].to_vec();
 
-        if self.calc_crc(&data) == crc {
+        if calc_crc(&data) == crc {
             Ok(())
         } else {
             // TODO: replace with an amphis error
@@ -250,13 +241,21 @@ impl LeafManager {
     }
 }
 
+fn calc_crc(data: &Vec<u8>) -> u32 {
+    let mut digest = crc32::Digest::new(crc32::IEEE);
+    digest.write(data);
+    digest.write(&(data.len() as u32).to_le_bytes());
+
+    digest.sum32()
+}
+
 impl LeafHeader {
     pub fn new() -> Self {
         LeafHeader {
-            bitmap: vec![0u8; NUM_SLOT / 8],
+            bitmap: [0u8; NUM_SLOT / 8],
             next: 0u32,
-            fingerprints: vec![0u8; NUM_SLOT],
-            kv_info: vec![KVInfo::new(); NUM_SLOT],
+            fingerprints: [0u8; NUM_SLOT],
+            kv_info: [KVInfo::new(); NUM_SLOT],
             tail_offset: LEAF_SIZE as u32,
         }
     }
@@ -316,7 +315,7 @@ impl LeafHeader {
         self.tail_offset = data_offset as u32;
     }
 
-    pub fn get_fingerprints(&self) -> &Vec<u8> {
+    pub fn get_fingerprints(&self) -> &[u8] {
         &self.fingerprints
     }
 
@@ -340,7 +339,7 @@ impl LeafHeader {
 }
 
 impl KVInfo {
-    pub fn new() -> Self {
+    fn new() -> Self {
         KVInfo {
             offset: 0,
             key_size: 0,
@@ -348,7 +347,7 @@ impl KVInfo {
         }
     }
 
-    pub fn get(&self) -> (usize, usize, usize) {
+    fn get(&self) -> (usize, usize, usize) {
         (
             self.offset as usize,
             self.key_size as usize,
@@ -356,7 +355,7 @@ impl KVInfo {
         )
     }
 
-    pub fn set(&mut self, offset: usize, key_size: usize, value_size: usize) {
+    fn set(&mut self, offset: usize, key_size: usize, value_size: usize) {
         self.offset = offset as u32;
         self.key_size = key_size as u32;
         self.value_size = value_size as u32;
@@ -380,5 +379,53 @@ impl std::fmt::Display for KVInfo {
             "[offset: {}, key_size: {}, value_size {}]",
             self.offset, self.key_size, self.value_size
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fptree::leaf_manager::KVInfo;
+    use crate::fptree::leaf_manager::LeafHeader;
+    const NUM_SLOT: usize = 32;
+    const LEAF_SIZE: usize = 256 * 1024;
+
+    fn make_header() -> LeafHeader {
+        LeafHeader {
+            bitmap: [0u8; NUM_SLOT / 8],
+            next: 0u32,
+            fingerprints: [0u8; NUM_SLOT],
+            kv_info: [KVInfo::new(); NUM_SLOT],
+            tail_offset: LEAF_SIZE as u32,
+        }
+    }
+
+    #[test]
+    fn test_need_split() {
+        let mut header = make_header();
+        assert!(!header.need_split(100));
+
+        header.set_tail_offset(500);
+        assert!(header.need_split(100));
+        assert!(!header.need_split(10));
+
+        for i in 0..NUM_SLOT {
+            header.set_slot(i);
+        }
+        assert!(header.need_split(0));
+    }
+
+    #[test]
+    fn test_slot() {
+        let mut header = make_header();
+        assert!(!header.is_slot_set(3));
+
+        for i in 0..4 {
+            header.set_slot(i);
+        }
+        assert_eq!(header.get_empty_slot().unwrap(), 4);
+        assert!(header.is_slot_set(3));
+
+        header.unset_slot(2);
+        assert_eq!(header.get_empty_slot().unwrap(), 2);
     }
 }

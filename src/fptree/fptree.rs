@@ -3,7 +3,13 @@ use std::rc::Rc;
 
 use super::inner::Inner;
 use super::leaf::Leaf;
-use super::leaf_manager::LeafManager;
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use crate::fptree::leaf_manager::MockLeafManager as LeafManager;
+    } else {
+        use crate::fptree::leaf_manager::LeafManager;
+    }
+}
 use super::node::Node;
 use crate::config::Config;
 
@@ -22,7 +28,6 @@ impl FPTree {
         })
     }
 
-    // TODO: error handling
     pub fn insert(&mut self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
         let opt_split_key = self.root.borrow_mut().insert(key, value)?;
 
@@ -40,7 +45,6 @@ impl FPTree {
         Ok(())
     }
 
-    // TODO: error handling
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         self.root.borrow().get(key)
     }

@@ -128,11 +128,38 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use crate::fptree::inner::Inner;
-    use crate::fptree::leaf::Leaf;
     use crate::fptree::node::Node;
     use std::cell::RefCell;
     use std::rc::Rc;
     const FANOUT: usize = 3;
+
+    struct MockLeaf {}
+
+    impl Node for MockLeaf {
+        fn get_next(&self) -> Option<Rc<RefCell<dyn Node>>> {
+            None
+        }
+        fn get_child(&self, _key: &Vec<u8>) -> Option<Rc<RefCell<dyn Node>>> {
+            None
+        }
+        fn insert(
+            &mut self,
+            _key: &Vec<u8>,
+            _value: &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, std::io::Error> {
+            Ok(None)
+        }
+        fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+            if *key == "key".as_bytes().to_vec() {
+                Ok(Some("value".as_bytes().to_vec()))
+            } else {
+                Ok(None)
+            }
+        }
+        fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn test_need_split() {
@@ -185,8 +212,8 @@ mod tests {
     #[test]
     fn test_insert() {
         let mut inner = Inner::new();
-        let child1: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
-        let child2: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
+        let child1: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
+        let child2: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
         let k1 = "key1".as_bytes().to_vec();
         let k2 = "key2".as_bytes().to_vec();
         inner.keys = vec![k1, k2];
@@ -194,7 +221,7 @@ mod tests {
 
         let k = "key".as_bytes().to_vec();
         let v = "value".as_bytes().to_vec();
-        inner.insert(&k, &v);
+        inner.insert(&k, &v).unwrap();
 
         let not_exists = match inner.get_next() {
             Some(_) => false,
@@ -202,15 +229,13 @@ mod tests {
         };
         assert!(not_exists);
         assert_eq!(inner.keys.len(), 2);
-        assert_eq!(child1.borrow().get(&k).unwrap().unwrap(), v);
-        assert_eq!(child2.borrow().get(&k).unwrap(), None);
     }
 
     #[test]
     fn test_get() {
         let mut inner = Inner::new();
-        let child1: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
-        let child2: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
+        let child1: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
+        let child2: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
         let k1 = "key1".as_bytes().to_vec();
         let k2 = "key2".as_bytes().to_vec();
         inner.keys = vec![k1, k2];
@@ -218,7 +243,7 @@ mod tests {
 
         let k = "key".as_bytes().to_vec();
         let v = "value".as_bytes().to_vec();
-        inner.insert(&k, &v);
+        inner.insert(&k, &v).unwrap();
 
         let result = inner.get(&k);
 
@@ -228,11 +253,11 @@ mod tests {
     #[test]
     fn test_split() {
         let mut inner = Inner::new();
-        let child1: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
-        let child2: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
-        let child3: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
-        let child4: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
-        let child5: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
+        let child1: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
+        let child2: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
+        let child3: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
+        let child4: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
+        let child5: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(MockLeaf {}));
         let k1 = "key1".as_bytes().to_vec();
         let k2 = "key2".as_bytes().to_vec();
         let k3 = "key3".as_bytes().to_vec();
@@ -246,7 +271,7 @@ mod tests {
             Rc::clone(&child5),
         ];
 
-        let split_key = inner.split();
+        let split_key = inner.split().unwrap();
 
         assert_eq!(split_key, k3);
         assert_eq!(inner.keys, vec!(k1.clone(), k2.clone()));

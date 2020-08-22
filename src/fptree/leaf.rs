@@ -4,8 +4,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::rc::Rc;
 
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use crate::fptree::leaf_manager::MockLeafManager as LeafManager;
+    } else {
+        use crate::fptree::leaf_manager::LeafManager;
+    }
+}
 use super::leaf_manager::LeafHeader;
-use super::leaf_manager::LeafManager;
 use super::leaf_manager::NUM_SLOT;
 use super::node::Node;
 
@@ -34,7 +40,6 @@ impl Node for Leaf {
         None
     }
 
-    // TODO: error handling
     fn insert(
         &mut self,
         key: &Vec<u8>,
@@ -61,10 +66,9 @@ impl Node for Leaf {
 
             self.header.set_slot(slot);
             self.header.set_tail_offset(tail_offset);
-            self.header.set_fingerprint(slot, calc_key_hash(key));
+            self.header.set_fingerprint(slot, self.calc_key_hash(key));
             self.header
                 .set_kv_info(slot, tail_offset, key.len(), value.len());
-            // TODO: CRc
             self.leaf_manager
                 .borrow_mut()
                 .update_header(self.id, &self.header)?;
@@ -76,7 +80,7 @@ impl Node for Leaf {
 
     fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         trace!("Read from Leaf: {}", self);
-        let hash = calc_key_hash(key);
+        let hash = self.calc_key_hash(key);
         for (slot, fp) in self.header.get_fingerprints().iter().enumerate() {
             if self.header.is_slot_set(slot) && *fp == hash {
                 let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
@@ -113,7 +117,7 @@ impl Node for Leaf {
         let split_key = keys[new_first].clone();
 
         for k in keys.split_off(new_first) {
-            let hash = calc_key_hash(&k);
+            let hash = self.calc_key_hash(&k);
             let mut removed_slot: Option<usize> = None;
             for (slot, fp) in self.header.get_fingerprints().iter().enumerate() {
                 if *fp == hash {
@@ -147,58 +151,59 @@ impl Node for Leaf {
 
 impl Leaf {
     pub fn new(leaf_manager: Rc<RefCell<LeafManager>>) -> Result<Self, std::io::Error> {
-        let id = leaf_manager.borrow_mut().get_free_leaf()?;
+        let (id, header) = leaf_manager.borrow_mut().get_free_leaf()?;
 
         Ok(Leaf {
-            leaf_manager: leaf_manager,
-            header: LeafHeader::new(),
-            id: id,
+            leaf_manager,
+            header,
+            id,
             next: None,
         })
     }
-}
 
-fn calc_key_hash(key: &Vec<u8>) -> u8 {
-    let mut hasher = DefaultHasher::new();
-    for b in key {
-        hasher.write_u8(*b);
+    fn calc_key_hash(&self, key: &Vec<u8>) -> u8 {
+        let mut hasher = DefaultHasher::new();
+        for b in key {
+            hasher.write_u8(*b);
+        }
+
+        hasher.finish() as u8
     }
-
-    hasher.finish() as u8
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use crate::fptree::leaf::Leaf;
+    use crate::fptree::leaf_manager::LeafHeader;
+    use crate::fptree::leaf_manager::MockLeafManager as LeafManager;
     use crate::fptree::node::Node;
     use std::cell::RefCell;
     use std::rc::Rc;
     const NUM_SLOT: usize = 32;
+    const LEAF_SIZE: usize = 256 * 1024;
 
-    #[test]
-    fn test_need_split() {
-        let mut leaf = Leaf::new();
-        assert_eq!(leaf.need_split(), false);
+    fn make_new_leaf(id: usize) -> Leaf {
+        let mut mock_leaf_manager = LeafManager::default();
+        mock_leaf_manager
+            .expect_get_free_leaf()
+            .returning(move || Ok((id, LeafHeader::new())));
+        mock_leaf_manager
+            .expect_update_header()
+            .returning(move |_, _| Ok(()));
 
-        for i in 0..NUM_SLOT {
-            let k = vec![i as u8];
-            let v = vec![i as u8];
-            leaf.insert(&k, &v);
-        }
-        assert_eq!(leaf.need_split(), true);
+        Leaf::new(Rc::new(RefCell::new(mock_leaf_manager))).unwrap()
     }
 
     #[test]
     fn test_get_next() {
-        let mut leaf = Leaf::new();
+        let mut leaf = make_new_leaf(0);
         let not_exists = match leaf.get_next() {
             Some(_) => false,
             None => true,
         };
         assert!(not_exists);
 
-        let new_leaf: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(Leaf::new()));
+        let new_leaf: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(make_new_leaf(1)));
         leaf.next = Some(Rc::clone(&new_leaf));
 
         let next = leaf.get_next().unwrap();
@@ -208,69 +213,112 @@ mod tests {
 
     #[test]
     fn test_insert_first() {
-        let mut leaf = Leaf::new();
+        let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
         let k = "key".as_bytes().to_vec();
         let v = "value".as_bytes().to_vec();
 
-        leaf.insert(&k, &v);
+        leaf.insert(&k, &v).unwrap();
 
-        assert_eq!(leaf.bitmap[0], 1);
-        assert_eq!(leaf.fingerprints[0], 192);
-        assert_eq!(leaf.data[0], (k, v));
+        let expected_offset = LEAF_SIZE - 1;
+        assert!(leaf.header.is_slot_set(0));
+        assert_eq!(leaf.header.get_fingerprints()[0], 192);
+        assert_eq!(leaf.header.get_tail_offset(), expected_offset);
+        assert_eq!(
+            leaf.header.get_kv_info(0),
+            (expected_offset, k.len(), v.len())
+        );
     }
 
     #[test]
     fn test_insert_any_slot() {
-        let mut leaf = Leaf::new();
-        for i in 0..16 {
+        let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
+        let any_slot = NUM_SLOT / 2;
+        for i in 0..any_slot {
             let k = vec![i as u8];
             let v = vec![i as u8];
-            leaf.insert(&k, &v);
+            leaf.insert(&k, &v).unwrap();
         }
 
-        leaf.bitmap[1] = 0xFF ^ (1 << 5);
+        assert!((0..any_slot).all(|i| { leaf.header.is_slot_set(i) }));
+        assert!(!leaf.header.is_slot_set(any_slot));
+
         let k = "key".as_bytes().to_vec();
         let v = "value".as_bytes().to_vec();
 
-        leaf.insert(&k, &v);
+        leaf.insert(&k, &v).unwrap();
 
-        assert_eq!(leaf.bitmap[1], 0xFF);
-        assert_eq!(leaf.fingerprints[13], 192);
-        assert_eq!(leaf.data[13], (k, v));
+        let expected_offset = LEAF_SIZE - any_slot - 1;
+        assert!(leaf.header.is_slot_set(any_slot));
+        assert_eq!(leaf.header.get_fingerprints()[any_slot], 192);
+        assert_eq!(leaf.header.get_tail_offset(), expected_offset);
+        assert_eq!(
+            leaf.header.get_kv_info(any_slot),
+            (expected_offset, k.len(), v.len())
+        );
     }
 
     #[test]
     fn test_get() {
-        let mut leaf = Leaf::new();
+        let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_read_data()
+            .returning(|_, _, _, _| Ok((vec![3], vec![3])));
         for i in 0..NUM_SLOT {
             let k = vec![i as u8];
-            let v = vec![i as u8];
-            leaf.insert(&k, &v);
+            leaf.header.set_fingerprint(i, leaf.calc_key_hash(&k));
         }
+        leaf.header.set_slot(3);
 
-        for i in 0..NUM_SLOT {
-            let k = vec![i as u8];
-            let v = vec![i as u8];
-            assert_eq!(leaf.get(&k).unwrap().unwrap(), v);
-        }
+        let k = vec![3u8];
+        let v = vec![3u8];
+        assert_eq!(leaf.get(&k).unwrap().unwrap(), v);
 
-        let k = vec![100 as u8];
+        let k = vec![1 as u8];
         assert_eq!(leaf.get(&k).unwrap(), None);
     }
 
     #[test]
     fn test_split() {
-        let mut leaf = Leaf::new();
+        let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_read_key()
+            .returning(|_, offset, _| {
+                let k = vec![(LEAF_SIZE - offset - 1) as u8];
+                Ok(k.clone())
+            });
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_read_data()
+            .returning(|_, offset, _, _| {
+                let kv = vec![(LEAF_SIZE - offset - 1) as u8];
+                Ok((kv.clone(), kv.clone()))
+            });
+
         for i in 0..NUM_SLOT {
             let k = vec![i as u8];
             let v = vec![i as u8];
-            leaf.insert(&k, &v);
+            leaf.insert(&k, &v).unwrap();
         }
 
-        let split_key = leaf.split();
+        let split_key = leaf.split().unwrap();
 
         assert_eq!(split_key, vec!((NUM_SLOT / 2) as u8));
-        assert_eq!(leaf.bitmap, vec!(0xFF, 0xFF, 0, 0));
+        assert!((0..(NUM_SLOT / 2)).all(|i| { leaf.header.is_slot_set(i) }));
+        assert!(((NUM_SLOT / 2)..NUM_SLOT).all(|i| { !leaf.header.is_slot_set(i) }));
         let exists = match leaf.get_next() {
             Some(_) => true,
             None => false,
@@ -278,4 +326,3 @@ mod tests {
         assert!(exists);
     }
 }
-*/
