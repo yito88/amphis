@@ -15,14 +15,15 @@ fn main() {
     */
     let num_elements = 1025;
 
-    let kvs = match amphis::kvs::KVS::new() {
+    let config = amphis::config::Config::new();
+    let kvs = match amphis::kvs::KVS::new(&config) {
         Ok(s) => s,
         Err(e) => panic!(e),
     };
     for i in 0..num_elements {
         let key = "k".to_string() + &i.to_string();
         let value = "v".to_string() + &i.to_string();
-        kvs.insert(&key.as_bytes().to_vec(), &value.as_bytes().to_vec())
+        kvs.put(&key.as_bytes().to_vec(), &value.as_bytes().to_vec())
             .unwrap();
     }
 
@@ -36,7 +37,7 @@ fn main() {
 
         let tx = tx.clone();
         pool.execute(move || {
-            let result = h.insert(&key.as_bytes().to_vec(), &value.as_bytes().to_vec()).unwrap();
+            let result = h.put(&key.as_bytes().to_vec(), &value.as_bytes().to_vec()).unwrap();
             tx.send(result)
                 .expect("channel will be there waiting for the pool");
         });

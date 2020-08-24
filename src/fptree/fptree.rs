@@ -28,7 +28,7 @@ impl FPTree {
         })
     }
 
-    pub fn insert(&mut self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
+    pub fn put(&mut self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
         let opt_split_key = self.root.borrow_mut().insert(key, value)?;
 
         if let Some(split_key) = opt_split_key {
@@ -47,5 +47,9 @@ impl FPTree {
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         self.root.borrow().get(key)
+    }
+
+    pub fn delete(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
+        self.root.borrow_mut().delete(key)
     }
 }

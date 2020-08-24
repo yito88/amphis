@@ -5,13 +5,6 @@ const CONFIG_FILE: &str = "config.toml";
 #[derive(Deserialize)]
 pub struct Config {
     pub data_dir: String,
-    pub fptree_config: FPTreeConfig,
-}
-
-#[derive(Deserialize)]
-pub struct FPTreeConfig {
-    pub fanout: u8,
-    pub num_slot: u8,
 }
 
 impl Config {

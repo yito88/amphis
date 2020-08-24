@@ -79,6 +79,13 @@ impl Node for Inner {
         }
     }
 
+    fn delete(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
+        match self.get_child(key) {
+            Some(c) => c.borrow_mut().delete(key),
+            None => Ok(()),
+        }
+    }
+
     fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
         let new_keys = self.keys.split_off((FANOUT + 1) / 2);
         let split_key = new_keys.first().unwrap().clone();
@@ -127,11 +134,7 @@ impl Inner {
 
 #[cfg(test)]
 mod tests {
-    use crate::fptree::inner::Inner;
-    use crate::fptree::node::Node;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    const FANOUT: usize = 3;
+    use super::*;
 
     struct MockLeaf {}
 
@@ -155,6 +158,9 @@ mod tests {
             } else {
                 Ok(None)
             }
+        }
+        fn delete(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
+            Ok(())
         }
         fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
             Ok(Vec::new())

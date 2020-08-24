@@ -124,7 +124,7 @@ impl LeafManager {
         Ok(mmap)
     }
 
-    pub fn update_header(&mut self, id: usize, header: &LeafHeader) -> Result<(), std::io::Error> {
+    pub fn commit_header(&mut self, id: usize, header: &LeafHeader) -> Result<(), std::io::Error> {
         let mmap = &mut self.header_mmap[id];
         let mut encoded: Vec<u8> = match bincode::serialize(header) {
             Ok(b) => b,
@@ -141,26 +141,6 @@ impl LeafManager {
         mmap.flush()?;
 
         Ok(())
-    }
-
-    pub fn read_key(
-        &self,
-        id: usize,
-        offset: usize,
-        key_size: usize,
-    ) -> Result<Vec<u8>, std::io::Error> {
-        let data_offset = self.leaves_in_tree[id] + offset;
-        let data_size = key_size + LEN_REDUNDANCY;
-        let mmap = unsafe {
-            MmapOptions::new()
-                .offset(data_offset as u64)
-                .len(data_size)
-                .map(&self.leaves_file)?
-        };
-
-        self.check_crc(&mmap[0..])?;
-
-        Ok(mmap[0..key_size].to_vec())
     }
 
     pub fn read_data(
@@ -384,10 +364,7 @@ impl std::fmt::Display for KVInfo {
 
 #[cfg(test)]
 mod tests {
-    use crate::fptree::leaf_manager::KVInfo;
-    use crate::fptree::leaf_manager::LeafHeader;
-    const NUM_SLOT: usize = 32;
-    const LEAF_SIZE: usize = 256 * 1024;
+    use super::*;
 
     fn make_header() -> LeafHeader {
         LeafHeader {
