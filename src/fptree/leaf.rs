@@ -48,6 +48,9 @@ impl Node for Leaf {
         let mut ret: Option<Vec<u8>> = None;
 
         self.invalidate_data(key, false)?;
+        if self.header.need_reclamation() {
+            self.reclaim()?;
+        }
 
         let data_size = key.len() + value.len();
         if self.header.need_split(data_size) {
@@ -192,6 +195,44 @@ impl Leaf {
 
         Ok(())
     }
+
+    fn reclaim(&mut self) -> Result<(), std::io::Error> {
+        let (new_id, mut new_header) = self.leaf_manager.borrow_mut().get_free_leaf()?;
+        let mut new_slot: usize = 0;
+        for slot in 0..NUM_SLOT {
+            if !self.header.is_slot_set(slot) {
+                continue;
+            }
+
+            let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+            let (key, value) =
+                self.leaf_manager
+                    .borrow()
+                    .read_data(self.id, data_offset, key_size, value_size)?;
+
+            let tail_offset = self.leaf_manager.borrow_mut().write_data(
+                new_id,
+                new_header.get_tail_offset(),
+                &key,
+                &value,
+            )?;
+
+            new_header.set_slot(new_slot);
+            new_header.set_tail_offset(tail_offset);
+            new_header.set_fingerprint(new_slot, self.header.get_fingerprints()[slot]);
+            new_header.set_kv_info(new_slot, tail_offset, key.len(), value.len());
+
+            new_slot += 1;
+        }
+
+        self.leaf_manager
+            .borrow_mut()
+            .commit_header(new_id, &new_header)?;
+        self.id = new_id;
+        self.header = new_header;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -204,15 +245,6 @@ mod tests {
         mock_leaf_manager
             .expect_get_free_leaf()
             .returning(move || Ok((id, LeafHeader::new())));
-        mock_leaf_manager
-            .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset - 1));
-        mock_leaf_manager
-            .expect_read_data()
-            .returning(|_, offset, _, _| {
-                let kv = vec![(LEAF_SIZE - offset - 1) as u8];
-                Ok((kv.clone(), kv.clone()))
-            });
         mock_leaf_manager
             .expect_commit_header()
             .returning(move |_, _| Ok(()));
@@ -240,6 +272,11 @@ mod tests {
     #[test]
     fn test_insert_first() {
         let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
+
         let k = "key".as_bytes().to_vec();
         let v = "value".as_bytes().to_vec();
 
@@ -258,6 +295,11 @@ mod tests {
     #[test]
     fn test_insert_any_slot() {
         let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
+
         let any_slot = NUM_SLOT / 2;
         for i in 0..any_slot {
             let k = vec![i as u8];
@@ -286,6 +328,18 @@ mod tests {
     #[test]
     fn test_get() {
         let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_read_data()
+            .returning(|_, offset, _, _| {
+                let kv = vec![(LEAF_SIZE - offset - 1) as u8];
+                Ok((kv.clone(), kv.clone()))
+            });
+
         for i in 0..5 {
             let k = vec![i as u8];
             let v = vec![i as u8];
@@ -303,6 +357,18 @@ mod tests {
     #[test]
     fn test_delete() {
         let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_read_data()
+            .returning(|_, offset, _, _| {
+                let kv = vec![(LEAF_SIZE - offset - 1) as u8];
+                Ok((kv.clone(), kv.clone()))
+            });
+
         for i in 0..5 {
             let k = vec![i as u8];
             let v = vec![i as u8];
@@ -319,6 +385,18 @@ mod tests {
     #[test]
     fn test_update() {
         let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, _, _| Ok(offset - 1));
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_read_data()
+            .returning(|_, offset, _, _| {
+                let kv = vec![(LEAF_SIZE - offset - 1) as u8];
+                Ok((kv.clone(), kv.clone()))
+            });
+
         for i in 0..5 {
             let k = vec![i as u8];
             let v = vec![i as u8];
@@ -345,6 +423,13 @@ mod tests {
             .borrow_mut()
             .expect_write_data()
             .returning(|_, offset, _, _| Ok(offset - 1));
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_read_data()
+            .returning(|_, offset, _, _| {
+                let kv = vec![(LEAF_SIZE - offset - 1) as u8];
+                Ok((kv.clone(), kv.clone()))
+            });
 
         for i in 0..NUM_SLOT {
             let k = vec![i as u8];
@@ -362,5 +447,35 @@ mod tests {
             None => false,
         };
         assert!(exists);
+    }
+
+    #[test]
+    fn test_reclaim() {
+        let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .borrow_mut()
+            .expect_write_data()
+            .returning(|_, offset, key, value| Ok(offset - key.len() - value.len()));
+        leaf.leaf_manager.borrow_mut().expect_read_data().returning(
+            |_, offset, key_size, value_size| {
+                let data_size = key_size + value_size;
+                let k = vec![((LEAF_SIZE - offset) / data_size - 1) as u8 % 3; key_size];
+                let v = vec![((LEAF_SIZE - offset) / data_size - 1) as u8; value_size];
+                Ok((k.clone(), v.clone()))
+            },
+        );
+
+        for i in 0..NUM_SLOT {
+            let k = vec![i as u8 % 3; 2048];
+            let v = vec![i as u8; 4096];
+            leaf.insert(&k, &v).unwrap();
+        }
+
+        leaf.reclaim().unwrap();
+
+        assert!((0..(NUM_SLOT / 3 + 1)).all(|i| { leaf.header.is_slot_set(i) }));
+        assert!(((NUM_SLOT / 3 + 1)..NUM_SLOT).all(|i| { !leaf.header.is_slot_set(i) }));
+        let expected_offset = LEAF_SIZE - (NUM_SLOT / 3 + 1) * 6144;
+        assert_eq!(leaf.header.get_tail_offset(), expected_offset);
     }
 }

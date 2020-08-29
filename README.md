@@ -4,9 +4,9 @@ An embedded key-value store
 # TODO
 - API
   - [x] get()
-  - [x] insert()
-  - [ ] update()
-  - [ ] delete()
+  - [x] put()
+    - including insert and update
+  - [x] delete()
 
 - Config
   - [ ] FPTree config

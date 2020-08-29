@@ -15,6 +15,8 @@ use mockall::automock;
 pub const NUM_SLOT: usize = 32;
 const NUM_ALLOCATION: usize = 16;
 const LEAF_SIZE: usize = 256 * 1024;
+const RECLAMATION_THRESHOLD: usize = LEAF_SIZE / 2;
+const RECLAMATION_RATE: f32 = 0.5;
 
 const LEN_BITMAP: usize = NUM_SLOT / 8;
 const LEN_NEXT: usize = 4;
@@ -247,6 +249,23 @@ impl LeafHeader {
         no_space || is_slot_full
     }
 
+    pub fn need_reclamation(&self) -> bool {
+        let occupied = LEAF_SIZE - self.tail_offset as usize + LEAF_HEADER_SIZE;
+        if occupied < RECLAMATION_THRESHOLD {
+            return false;
+        }
+
+        let mut valid_size = 0;
+        for slot in 0..NUM_SLOT {
+            if self.is_slot_set(slot) {
+                let (_, key_size, value_size) = self.kv_info[slot].get();
+                valid_size += key_size + value_size + LEN_REDUNDANCY * 2;
+            }
+        }
+
+        valid_size < (occupied as f32 * RECLAMATION_RATE) as usize
+    }
+
     pub fn get_empty_slot(&self) -> Option<usize> {
         for (i, slots) in self.bitmap.iter().enumerate() {
             if *slots == 0xFF {
@@ -389,6 +408,26 @@ mod tests {
             header.set_slot(i);
         }
         assert!(header.need_split(0));
+    }
+
+    #[test]
+    fn test_need_reclamation() {
+        let mut header = make_header();
+        assert!(!header.need_reclamation());
+
+        let mut offset = LEAF_SIZE;
+        let key_size = 2 * 1024;
+        let value_size = 4 * 1024;
+        for i in 0..32 {
+            offset -= key_size + value_size + LEN_REDUNDANCY * 2;
+            if i % 3 == 0 {
+                header.set_slot(i);
+            }
+            header.set_kv_info(i, offset, key_size, value_size);
+        }
+        header.set_tail_offset(offset);
+
+        assert!(header.need_reclamation());
     }
 
     #[test]
