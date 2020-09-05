@@ -17,7 +17,10 @@ An embedded key-value store
   - [x] Leaf file
   - [ ] Concurrency
   - [ ] Flush (converted to SSTable)
-  - [ ] Recovery
+  - [ ] Recovery (flush)
+  - [ ] tail header (for durable write)
+  - [ ] Reclaim a leaf page
+  - [ ] Extended leaf page
 
 - SSTable
   - [ ] SSTable file

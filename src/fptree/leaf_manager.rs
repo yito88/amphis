@@ -25,13 +25,13 @@ const LEN_FINGERPRINTS: usize = NUM_SLOT;
 const LEN_KV_INFO: usize = NUM_SLOT * std::mem::size_of::<KVInfo>();
 const LEAF_HEADER_SIZE: usize =
     LEN_BITMAP + LEN_NEXT + LEN_TAIL_OFFSET + LEN_FINGERPRINTS + LEN_KV_INFO + LEN_CRC;
+const DATA_OFFSET: usize = 4 * 1024;
 const LEN_SIZE: usize = 4;
 const LEN_CRC: usize = 4;
 const LEN_REDUNDANCY: usize = LEN_SIZE + LEN_CRC;
 
 pub struct LeafManager {
     leaves_file: File,
-    leaves_in_tree: Vec<usize>,
     free_leaves: VecDeque<usize>,
     header_mmap: Vec<MmapMut>,
 }
@@ -80,7 +80,6 @@ impl LeafManager {
         // TODO: recovery
         Ok(LeafManager {
             leaves_file: file,
-            leaves_in_tree: Vec::new(),
             free_leaves: VecDeque::new(),
             header_mmap: Vec::new(),
         })
@@ -91,31 +90,31 @@ impl LeafManager {
             self.allocate_new_leaves()?;
         }
 
-        let new_offset = self.free_leaves.pop_front().unwrap();
-        self.leaves_in_tree.push(new_offset);
+        let new_id = self.free_leaves.pop_front().unwrap();
+        self.header_mmap.push(self.mmap_header(new_id)?);
 
-        let index = self.leaves_in_tree.len() - 1;
-        self.header_mmap.push(self.mmap_header(index)?);
-
-        trace!("New leaf is allocated: {}", index);
-        Ok((index, LeafHeader::new()))
+        trace!("New leaf is allocated: {}", new_id);
+        Ok((new_id, LeafHeader::new()))
     }
 
     fn allocate_new_leaves(&mut self) -> Result<(), std::io::Error> {
         trace!("New leaf group is allocated");
         let file_size = self.leaves_file.metadata()?.len() as usize;
+        let start_id = file_size / LEAF_SIZE;
+        let end_id = start_id + NUM_ALLOCATION;
+
         let new_size = file_size + NUM_ALLOCATION * LEAF_SIZE;
         self.leaves_file.set_len(new_size as u64)?;
 
-        for offset in (file_size..new_size).step_by(LEAF_SIZE) {
-            self.free_leaves.push_back(offset);
+        for id in start_id..end_id {
+            self.free_leaves.push_back(id);
         }
 
         Ok(())
     }
 
     fn mmap_header(&self, id: usize) -> Result<MmapMut, std::io::Error> {
-        let offset = self.leaves_in_tree[id];
+        let offset = id * LEAF_SIZE;
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(offset as u64)
@@ -152,7 +151,7 @@ impl LeafManager {
         key_size: usize,
         value_size: usize,
     ) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
-        let data_offset = self.leaves_in_tree[id] + offset;
+        let data_offset = id * LEAF_SIZE + offset;
         let data_size = key_size + value_size + LEN_REDUNDANCY * 2;
         let mmap = unsafe {
             MmapOptions::new()
@@ -181,7 +180,7 @@ impl LeafManager {
         value: &Vec<u8>,
     ) -> Result<usize, std::io::Error> {
         let data_size = key.len() + value.len() + LEN_REDUNDANCY * 2;
-        let data_offset = self.leaves_in_tree[id] + offset - data_size;
+        let data_offset = id * LEAF_SIZE + offset;
         let mut mmap = unsafe {
             MmapOptions::new()
                 .offset(data_offset as u64)
@@ -201,7 +200,7 @@ impl LeafManager {
         mmap.copy_from_slice(&data);
         mmap.flush()?;
 
-        Ok(offset - data_size)
+        Ok(offset + data_size)
     }
 
     fn check_crc(&self, bytes: &[u8]) -> Result<(), std::io::Error> {
@@ -238,20 +237,19 @@ impl LeafHeader {
             next: 0u32,
             fingerprints: [0u8; NUM_SLOT],
             kv_info: [KVInfo::new(); NUM_SLOT],
-            tail_offset: LEAF_SIZE as u32,
+            tail_offset: DATA_OFFSET as u32,
         }
     }
 
     pub fn need_split(&self, data_size: usize) -> bool {
-        let no_space = self.tail_offset < (LEAF_HEADER_SIZE + data_size) as u32;
+        let no_space = LEAF_SIZE < self.tail_offset as usize + data_size;
         let is_slot_full = self.bitmap.iter().all(|&x| x == 0xFF);
 
         no_space || is_slot_full
     }
 
     pub fn need_reclamation(&self) -> bool {
-        let occupied = LEAF_SIZE - self.tail_offset as usize + LEAF_HEADER_SIZE;
-        if occupied < RECLAMATION_THRESHOLD {
+        if (self.tail_offset as usize) < RECLAMATION_THRESHOLD {
             return false;
         }
 
@@ -263,7 +261,7 @@ impl LeafHeader {
             }
         }
 
-        valid_size < (occupied as f32 * RECLAMATION_RATE) as usize
+        valid_size < (self.tail_offset as f32 * RECLAMATION_RATE) as usize
     }
 
     pub fn get_empty_slot(&self) -> Option<usize> {
@@ -300,6 +298,10 @@ impl LeafHeader {
         let offset = slot % 8;
 
         self.bitmap[idx] &= 0xFF ^ (1 << offset);
+    }
+
+    pub fn get_next(&mut self) -> usize {
+        self.next as usize
     }
 
     pub fn set_next(&mut self, next_id: usize) {
@@ -391,7 +393,7 @@ mod tests {
             next: 0u32,
             fingerprints: [0u8; NUM_SLOT],
             kv_info: [KVInfo::new(); NUM_SLOT],
-            tail_offset: LEAF_SIZE as u32,
+            tail_offset: DATA_OFFSET as u32,
         }
     }
 
@@ -400,7 +402,7 @@ mod tests {
         let mut header = make_header();
         assert!(!header.need_split(100));
 
-        header.set_tail_offset(500);
+        header.set_tail_offset(LEAF_SIZE - 50);
         assert!(header.need_split(100));
         assert!(!header.need_split(10));
 
@@ -415,11 +417,11 @@ mod tests {
         let mut header = make_header();
         assert!(!header.need_reclamation());
 
-        let mut offset = LEAF_SIZE;
+        let mut offset = 0;
         let key_size = 2 * 1024;
         let value_size = 4 * 1024;
         for i in 0..32 {
-            offset -= key_size + value_size + LEN_REDUNDANCY * 2;
+            offset += key_size + value_size + LEN_REDUNDANCY * 2;
             if i % 3 == 0 {
                 header.set_slot(i);
             }
