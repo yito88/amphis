@@ -1,8 +1,8 @@
 use log::trace;
-use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -16,22 +16,41 @@ use super::leaf_manager::NUM_SLOT;
 use super::node::Node;
 
 pub struct Leaf {
-    leaf_manager: Rc<RefCell<LeafManager>>,
+    leaf_manager: Arc<RwLock<LeafManager>>,
     header: LeafHeader,
     id: usize,
-    next: Option<Rc<RefCell<dyn Node>>>,
+    next: Option<Arc<RwLock<dyn Node + Send + Sync>>>,
+    is_root: bool,
 }
 
 impl Node for Leaf {
-    fn get_next(&self) -> Option<Rc<RefCell<dyn Node>>> {
+    fn is_root(&self) -> bool {
+        self.is_root
+    }
+
+    fn set_root(&mut self, is_root: bool) {
+        self.is_root = is_root;
+    }
+
+    fn is_leaf(&self) -> bool {
+        true
+    }
+
+    fn get_next(&self) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
         match &self.next {
-            Some(rc) => Some(Rc::clone(&rc)),
+            Some(arc) => Some(arc.clone()),
             None => None,
         }
     }
 
-    fn get_child(&self, _key: &Vec<u8>) -> Option<Rc<RefCell<dyn Node>>> {
+    fn get_child(&self, _key: &Vec<u8>) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
         None
+    }
+
+    fn may_need_split(&self, key: &Vec<u8>, value: &Vec<u8>) -> bool {
+        let data_size = key.len() + value.len();
+
+        self.header.need_split(data_size)
     }
 
     fn insert(
@@ -53,7 +72,7 @@ impl Node for Leaf {
             let new_leaf = self.get_next().unwrap();
             if split_key < *key {
                 // TODO: when the new leaf is split
-                new_leaf.borrow_mut().insert(key, value)?;
+                new_leaf.write().unwrap().insert(key, value)?;
                 return Ok(Some(split_key));
             }
 
@@ -64,7 +83,8 @@ impl Node for Leaf {
             let offset = self.header.get_tail_offset();
             let tail_offset = self
                 .leaf_manager
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .write_data(self.id, offset, key, value)?;
 
             self.header.set_slot(slot);
@@ -73,11 +93,12 @@ impl Node for Leaf {
             self.header
                 .set_kv_info(slot, offset, key.len(), value.len());
             self.leaf_manager
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .commit_header(self.id, &self.header)?;
         }
 
-        trace!("Leaf: {}", self);
+        trace!("Leaf: {}, key {:?}", self, key);
         Ok(ret)
     }
 
@@ -85,10 +106,12 @@ impl Node for Leaf {
         trace!("Read from Leaf: {}", self);
         for slot in self.get_existing_slots(key) {
             let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
-            let (actual_key, value) =
-                self.leaf_manager
-                    .borrow()
-                    .read_data(self.id, data_offset, key_size, value_size)?;
+            let (actual_key, value) = self.leaf_manager.read().unwrap().read_data(
+                self.id,
+                data_offset,
+                key_size,
+                value_size,
+            )?;
             if actual_key == *key {
                 return Ok(Some(value.clone()));
             }
@@ -102,19 +125,19 @@ impl Node for Leaf {
     }
 
     fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
-        let mut new_leaf = Leaf::new(Rc::clone(&self.leaf_manager))?;
+        let mut new_leaf = Leaf::new(self.leaf_manager.clone())?;
 
         let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>, usize)> = Vec::with_capacity(NUM_SLOT);
         for slot in 0..NUM_SLOT {
             if self.header.is_slot_set(slot) {
                 let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
-                let (key, value) = self.leaf_manager.borrow().read_data(
+                let (key, value) = self.leaf_manager.read().unwrap().read_data(
                     self.id,
                     data_offset,
                     key_size,
                     value_size,
                 )?;
-                kv_pairs.push((key.clone(), value.clone(), slot));
+                kv_pairs.push((key, value, slot));
             }
         }
         kv_pairs.sort_by_key(|p| p.0.clone());
@@ -130,21 +153,22 @@ impl Node for Leaf {
         trace!("new leaf: {}", new_leaf);
         trace!("split_key: {:?}", split_key.clone());
         self.header.set_next(new_leaf.id);
-        self.next = Some(Rc::new(RefCell::new(new_leaf)));
+        self.next = Some(Arc::new(RwLock::new(new_leaf)));
 
         Ok(split_key)
     }
 }
 
 impl Leaf {
-    pub fn new(leaf_manager: Rc<RefCell<LeafManager>>) -> Result<Self, std::io::Error> {
-        let (id, header) = leaf_manager.borrow_mut().get_free_leaf()?;
+    pub fn new(leaf_manager: Arc<RwLock<LeafManager>>) -> Result<Self, std::io::Error> {
+        let (id, header) = leaf_manager.write().unwrap().get_free_leaf()?;
 
         Ok(Leaf {
             leaf_manager,
             header,
             id,
             next: None,
+            is_root: false,
         })
     }
 
@@ -172,15 +196,18 @@ impl Leaf {
     fn invalidate_data(&mut self, key: &Vec<u8>, is_committed: bool) -> Result<(), std::io::Error> {
         for slot in self.get_existing_slots(key) {
             let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
-            let (actual_key, _value) =
-                self.leaf_manager
-                    .borrow()
-                    .read_data(self.id, data_offset, key_size, value_size)?;
+            let (actual_key, _value) = self.leaf_manager.read().unwrap().read_data(
+                self.id,
+                data_offset,
+                key_size,
+                value_size,
+            )?;
             if actual_key == *key {
                 self.header.unset_slot(slot);
                 if is_committed {
                     self.leaf_manager
-                        .borrow_mut()
+                        .write()
+                        .unwrap()
                         .commit_header(self.id, &self.header)?;
                 }
                 break;
@@ -191,7 +218,7 @@ impl Leaf {
     }
 
     fn reclaim(&mut self) -> Result<(), std::io::Error> {
-        let (new_id, mut new_header) = self.leaf_manager.borrow_mut().get_free_leaf()?;
+        let (new_id, mut new_header) = self.leaf_manager.write().unwrap().get_free_leaf()?;
         let mut new_slot: usize = 0;
         for slot in 0..NUM_SLOT {
             if !self.header.is_slot_set(slot) {
@@ -199,15 +226,18 @@ impl Leaf {
             }
 
             let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
-            let (key, value) =
-                self.leaf_manager
-                    .borrow()
-                    .read_data(self.id, data_offset, key_size, value_size)?;
+            let (key, value) = self.leaf_manager.read().unwrap().read_data(
+                self.id,
+                data_offset,
+                key_size,
+                value_size,
+            )?;
 
             let offset = new_header.get_tail_offset();
             let tail_offset = self
                 .leaf_manager
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .write_data(new_id, offset, &key, &value)?;
 
             new_header.set_slot(new_slot);
@@ -219,7 +249,8 @@ impl Leaf {
         }
 
         self.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .commit_header(new_id, &new_header)?;
         self.id = new_id;
         self.header = new_header;
@@ -249,7 +280,7 @@ mod tests {
             .expect_commit_header()
             .returning(move |_, _| Ok(()));
 
-        Leaf::new(Rc::new(RefCell::new(mock_leaf_manager))).unwrap()
+        Leaf::new(Arc::new(RwLock::new(mock_leaf_manager))).unwrap()
     }
 
     #[test]
@@ -261,19 +292,20 @@ mod tests {
         };
         assert!(not_exists);
 
-        let new_leaf: Rc<RefCell<dyn Node>> = Rc::new(RefCell::new(make_new_leaf(1)));
-        leaf.next = Some(Rc::clone(&new_leaf));
+        let new_leaf: Arc<RwLock<dyn Node + Send + Sync>> = Arc::new(RwLock::new(make_new_leaf(1)));
+        leaf.next = Some(new_leaf.clone());
 
         let next = leaf.get_next().unwrap();
 
-        assert!(Rc::ptr_eq(&next, &new_leaf));
+        assert!(Arc::ptr_eq(&next, &new_leaf));
     }
 
     #[test]
     fn test_insert_first() {
         let mut leaf = make_new_leaf(0);
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, _, _| Ok(offset + 1));
 
@@ -296,7 +328,8 @@ mod tests {
     fn test_insert_any_slot() {
         let mut leaf = make_new_leaf(0);
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, _, _| Ok(offset + 1));
 
@@ -329,11 +362,13 @@ mod tests {
     fn test_get() {
         let mut leaf = make_new_leaf(0);
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, _, _| Ok(offset + 1));
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
                 let kv = vec![(offset - DATA_OFFSET) as u8];
@@ -358,11 +393,13 @@ mod tests {
     fn test_delete() {
         let mut leaf = make_new_leaf(0);
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, _, _| Ok(offset + 1));
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
                 let kv = vec![(offset - DATA_OFFSET) as u8];
@@ -386,11 +423,13 @@ mod tests {
     fn test_update() {
         let mut leaf = make_new_leaf(0);
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, _, _| Ok(offset + 1));
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
                 let kv = vec![(offset - DATA_OFFSET) as u8];
@@ -420,11 +459,13 @@ mod tests {
     fn test_split() {
         let mut leaf = make_new_leaf(0);
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, _, _| Ok(offset + 1));
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
                 let kv = vec![(offset - DATA_OFFSET) as u8];
@@ -453,17 +494,20 @@ mod tests {
     fn test_reclaim() {
         let mut leaf = make_new_leaf(0);
         leaf.leaf_manager
-            .borrow_mut()
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, key, value| Ok(offset + key.len() + value.len()));
-        leaf.leaf_manager.borrow_mut().expect_read_data().returning(
-            |_, offset, key_size, value_size| {
+        leaf.leaf_manager
+            .write()
+            .unwrap()
+            .expect_read_data()
+            .returning(|_, offset, key_size, value_size| {
                 let data_size = key_size + value_size;
                 let k = vec![((offset - DATA_OFFSET) / data_size) as u8 % 3; key_size];
                 let v = vec![((offset - DATA_OFFSET) / data_size) as u8; value_size];
                 Ok((k.clone(), v.clone()))
-            },
-        );
+            });
 
         for i in 0..NUM_SLOT {
             let k = vec![i as u8 % 3; 2048];

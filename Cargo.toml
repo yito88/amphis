@@ -16,7 +16,7 @@ thiserror = "1.0.20"
 log = "0.4.11"
 cfg-if = "0.1.10"
 env_logger = "0.7.1"
+threadpool = "1.8.1"
 
 [dev-dependencies]
-#threadpool = "1.8.1"
 mockall = "0.7.2"

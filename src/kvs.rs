@@ -1,19 +1,19 @@
 //use crate::amphis_error::CrudError;
 use crate::fptree::fptree::FPTree;
 use log::trace;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 use crate::config::Config;
 
 pub struct KVS {
-    fptree: Rc<RefCell<FPTree>>,
+    fptree: Arc<RwLock<FPTree>>,
 }
 
 impl KVS {
     pub fn new(config: &Config) -> Result<Self, std::io::Error> {
         Ok(KVS {
-            fptree: Rc::new(RefCell::new(FPTree::new(&config)?)),
+            fptree: Arc::new(RwLock::new(FPTree::new(&config)?)),
         })
     }
 
@@ -23,7 +23,13 @@ impl KVS {
             String::from_utf8(key.clone()).unwrap(),
             String::from_utf8(value.clone()).unwrap()
         );
-        self.fptree.borrow_mut().put(key, value)?;
+
+        self.fptree.read().unwrap().put(key, value)?;
+        //let locked_fptree = self.fptree.read().unwrap();
+        //if let Some(split_key) = locked_fptree.put(key, value)? {
+        //    drop(locked_fptree);
+        //    self.fptree.write().unwrap().insert(&split_key);
+        //};
 
         Ok(())
     }
@@ -34,7 +40,7 @@ impl KVS {
             String::from_utf8(key.clone()).unwrap()
         );
 
-        self.fptree.borrow().get(key)
+        self.fptree.read().unwrap().get(key)
     }
 
     pub fn delete(&self, key: &Vec<u8>) -> Result<(), std::io::Error> {
@@ -43,6 +49,6 @@ impl KVS {
             String::from_utf8(key.clone()).unwrap()
         );
 
-        self.fptree.borrow_mut().delete(key)
+        self.fptree.read().unwrap().delete(key)
     }
 }
