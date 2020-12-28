@@ -19,7 +19,7 @@ pub struct Leaf {
     leaf_manager: Arc<RwLock<LeafManager>>,
     header: LeafHeader,
     id: usize,
-    next: Option<Arc<RwLock<dyn Node + Send + Sync>>>,
+    next: Option<Arc<RwLock<Leaf>>>,
     is_root: bool,
 }
 
@@ -127,20 +127,7 @@ impl Node for Leaf {
     fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
         let mut new_leaf = Leaf::new(self.leaf_manager.clone())?;
 
-        let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>, usize)> = Vec::with_capacity(NUM_SLOT);
-        for slot in 0..NUM_SLOT {
-            if self.header.is_slot_set(slot) {
-                let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
-                let (key, value) = self.leaf_manager.read().unwrap().read_data(
-                    self.id,
-                    data_offset,
-                    key_size,
-                    value_size,
-                )?;
-                kv_pairs.push((key, value, slot));
-            }
-        }
-        kv_pairs.sort_by_key(|p| p.0.clone());
+        let mut kv_pairs = self.get_sorted_kv_pairs()?;
         let new_first = kv_pairs.len() / 2;
         let split_key = kv_pairs[new_first].0.clone();
 
@@ -170,6 +157,34 @@ impl Leaf {
             next: None,
             is_root: false,
         })
+    }
+
+    pub fn get_sorted_kv_pairs(&self) -> Result<Vec<(Vec<u8>, Vec<u8>, usize)>, std::io::Error> {
+        let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>, usize)> = Vec::with_capacity(NUM_SLOT);
+
+        for slot in 0..NUM_SLOT {
+            if self.header.is_slot_set(slot) {
+                let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+                let (key, value) = self.leaf_manager.read().unwrap().read_data(
+                    self.id,
+                    data_offset,
+                    key_size,
+                    value_size,
+                )?;
+                kv_pairs.push((key, value, slot));
+            }
+        }
+        kv_pairs.sort();
+
+        Ok(kv_pairs)
+    }
+
+    // it's a redundant method, but it can help me avoid downcast
+    pub fn get_next_leaf(&self) -> Option<Arc<RwLock<Leaf>>> {
+        match &self.next {
+            Some(arc) => Some(arc.clone()),
+            None => None,
+        }
     }
 
     fn calc_key_hash(&self, key: &Vec<u8>) -> u8 {
@@ -292,10 +307,10 @@ mod tests {
         };
         assert!(not_exists);
 
-        let new_leaf: Arc<RwLock<dyn Node + Send + Sync>> = Arc::new(RwLock::new(make_new_leaf(1)));
+        let new_leaf: Arc<RwLock<Leaf>> = Arc::new(RwLock::new(make_new_leaf(1)));
         leaf.next = Some(new_leaf.clone());
 
-        let next = leaf.get_next().unwrap();
+        let next = leaf.get_next_leaf().unwrap();
 
         assert!(Arc::ptr_eq(&next, &new_leaf));
     }

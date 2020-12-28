@@ -1,5 +1,5 @@
 pub mod fptree;
 mod inner;
-mod leaf;
+pub mod leaf;
 mod leaf_manager;
-mod node;
+pub mod node;

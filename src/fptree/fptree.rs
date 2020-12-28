@@ -18,6 +18,7 @@ use crate::config::Config;
 
 pub struct FPTree {
     root_ptr: Arc<RwLock<Arc<RwLock<dyn Node + Send + Sync>>>>,
+    first_leaf: Arc<RwLock<Leaf>>,
     mutex: Arc<Mutex<usize>>,
 }
 
@@ -25,13 +26,18 @@ impl FPTree {
     pub fn new(config: &Config) -> Result<Self, std::io::Error> {
         let leaf_manager = Arc::new(RwLock::new(LeafManager::new(config)?));
         // TODO: recovery
-        let mut first_leaf = Leaf::new(leaf_manager).unwrap();
-        first_leaf.set_root(true);
+        let first_leaf = Arc::new(RwLock::new(Leaf::new(leaf_manager).unwrap()));
+        first_leaf.write().unwrap().set_root(true);
 
         Ok(FPTree {
-            root_ptr: Arc::new(RwLock::new(Arc::new(RwLock::new(first_leaf)))),
+            root_ptr: Arc::new(RwLock::new(first_leaf.clone())),
             mutex: Arc::new(Mutex::new(0)),
+            first_leaf: first_leaf.clone(),
         })
+    }
+
+    pub fn get_first_leaf(&self) -> Arc<RwLock<Leaf>> {
+        self.first_leaf.clone()
     }
 
     fn split_root(

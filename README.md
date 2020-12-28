@@ -13,9 +13,9 @@ An embedded key-value store
   - [ ] SSTable config
 
 - FPTree
-  - [x] B+Tree
+  - [x] Simplified FPTree
   - [x] Leaf file
-  - [ ] Concurrency
+  - [x] Concurrency
   - [ ] Flush (converted to SSTable)
   - [ ] Recovery (flush)
   - [ ] tail header (for durable write)

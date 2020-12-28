@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 const CONFIG_FILE: &str = "config.toml";
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Config {
     pub data_dir: String,
 }

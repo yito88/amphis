@@ -1,12 +1,12 @@
-use crate::config::Config;
-use crc::{crc32, Hasher32};
 use log::{trace, warn};
 use memmap::{MmapMut, MmapOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::convert::TryInto;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
+
+use crate::config::Config;
+use crate::data_utility;
 
 #[cfg(test)]
 use mockall::automock;
@@ -23,12 +23,13 @@ const LEN_NEXT: usize = 4;
 const LEN_TAIL_OFFSET: usize = 4;
 const LEN_FINGERPRINTS: usize = NUM_SLOT;
 const LEN_KV_INFO: usize = NUM_SLOT * std::mem::size_of::<KVInfo>();
-const LEAF_HEADER_SIZE: usize =
-    LEN_BITMAP + LEN_NEXT + LEN_TAIL_OFFSET + LEN_FINGERPRINTS + LEN_KV_INFO + LEN_CRC;
+const LEAF_HEADER_SIZE: usize = LEN_BITMAP
+    + LEN_NEXT
+    + LEN_TAIL_OFFSET
+    + LEN_FINGERPRINTS
+    + LEN_KV_INFO
+    + data_utility::LEN_CRC;
 const DATA_OFFSET: usize = 4 * 1024;
-const LEN_SIZE: usize = 4;
-const LEN_CRC: usize = 4;
-const LEN_REDUNDANCY: usize = LEN_SIZE + LEN_CRC;
 
 pub struct LeafManager {
     leaves_file: File,
@@ -71,7 +72,9 @@ impl LeafManager {
             Err(e) => match e.kind() {
                 ErrorKind::NotFound => {
                     warn!("a new leaf file is created");
-                    File::create(&leaf_file_path)?
+                    let f = File::create(&leaf_file_path)?;
+                    f.sync_all()?;
+                    f
                 }
                 _ => return Err(e),
             },
@@ -114,6 +117,7 @@ impl LeafManager {
     }
 
     fn mmap_header(&self, id: usize) -> Result<MmapMut, std::io::Error> {
+        // TODO: protect the header when write failure (tail header)
         let offset = id * LEAF_SIZE;
         let mmap = unsafe {
             MmapOptions::new()
@@ -137,7 +141,7 @@ impl LeafManager {
                 ))
             }
         };
-        encoded.extend(&calc_crc(&encoded).to_le_bytes());
+        encoded.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
         mmap.copy_from_slice(&encoded);
         mmap.flush()?;
 
@@ -152,22 +156,22 @@ impl LeafManager {
         value_size: usize,
     ) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
         let data_offset = id * LEAF_SIZE + offset;
-        let data_size = key_size + value_size + LEN_REDUNDANCY * 2;
+        let data_size = key_size + value_size + data_utility::LEN_REDUNDANCY * 2;
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(data_offset as u64)
                 .len(data_size)
                 .map(&self.leaves_file)?
         };
+        let bound_offset = key_size + data_utility::LEN_REDUNDANCY;
+        data_utility::check_kv_crc(&mmap[..bound_offset])?;
+        data_utility::check_kv_crc(&mmap[bound_offset..])?;
 
-        let value_start = key_size + LEN_REDUNDANCY;
-        let value_end = value_start + value_size;
-
-        self.check_crc(&mmap[0..value_start])?;
-        self.check_crc(&mmap[value_start..])?;
+        let (key_start, key_end) = data_utility::get_key_offset(key_size);
+        let (value_start, value_end) = data_utility::get_value_offset(key_size, value_size);
 
         Ok((
-            mmap[0..key_size].to_vec(),
+            mmap[key_start..key_end].to_vec(),
             mmap[value_start..value_end].to_vec(),
         ))
     }
@@ -179,7 +183,7 @@ impl LeafManager {
         key: &Vec<u8>,
         value: &Vec<u8>,
     ) -> Result<usize, std::io::Error> {
-        let data_size = key.len() + value.len() + LEN_REDUNDANCY * 2;
+        let data_size = key.len() + value.len() + data_utility::LEN_REDUNDANCY * 2;
         let data_offset = id * LEAF_SIZE + offset;
         let mut mmap = unsafe {
             MmapOptions::new()
@@ -188,46 +192,12 @@ impl LeafManager {
                 .map_mut(&self.leaves_file)?
         };
 
-        let mut data: Vec<u8> = Vec::with_capacity(data_size);
-        data.extend(key);
-        data.extend(&(key.len() as u32).to_le_bytes());
-        data.extend(&calc_crc(key).to_le_bytes());
-
-        data.extend(value);
-        data.extend(&(value.len() as u32).to_le_bytes());
-        data.extend(&calc_crc(value).to_le_bytes());
-
+        let data = data_utility::format_data_with_crc(&key, &value);
         mmap.copy_from_slice(&data);
         mmap.flush()?;
 
         Ok(offset + data_size)
     }
-
-    fn check_crc(&self, bytes: &[u8]) -> Result<(), std::io::Error> {
-        let len = bytes.len();
-        let crc = u32::from_le_bytes(bytes[(len - LEN_CRC)..len].try_into().unwrap());
-        let size = u32::from_le_bytes(
-            bytes[(len - LEN_REDUNDANCY)..(len - LEN_CRC)]
-                .try_into()
-                .unwrap(),
-        );
-        let data = bytes[0..size as usize].to_vec();
-
-        if calc_crc(&data) == crc {
-            Ok(())
-        } else {
-            // TODO: replace with an amphis error
-            Err(std::io::Error::new(ErrorKind::Other, "CRC check failed!"))
-        }
-    }
-}
-
-fn calc_crc(data: &Vec<u8>) -> u32 {
-    let mut digest = crc32::Digest::new(crc32::IEEE);
-    digest.write(data);
-    digest.write(&(data.len() as u32).to_le_bytes());
-
-    digest.sum32()
 }
 
 impl LeafHeader {
@@ -257,7 +227,7 @@ impl LeafHeader {
         for slot in 0..NUM_SLOT {
             if self.is_slot_set(slot) {
                 let (_, key_size, value_size) = self.kv_info[slot].get();
-                valid_size += key_size + value_size + LEN_REDUNDANCY * 2;
+                valid_size += key_size + value_size + data_utility::LEN_REDUNDANCY * 2;
             }
         }
 
@@ -421,7 +391,7 @@ mod tests {
         let key_size = 2 * 1024;
         let value_size = 4 * 1024;
         for i in 0..32 {
-            offset += key_size + value_size + LEN_REDUNDANCY * 2;
+            offset += key_size + value_size + data_utility::LEN_REDUNDANCY * 2;
             if i % 3 == 0 {
                 header.set_slot(i);
             }

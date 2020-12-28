@@ -12,7 +12,7 @@ fn test_mutations() {
         data_dir: DATA_DIR.to_string(),
     };
     std::fs::create_dir(DATA_DIR).unwrap();
-    let kvs = KVS::new(&config).unwrap();
+    let kvs = KVS::new(config).unwrap();
 
     // INSERT
     for i in 0..NUM_INSERTION {
