@@ -1,8 +1,7 @@
 use log::trace;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -82,7 +81,7 @@ impl Node for Leaf {
             let offset = self.header.get_tail_offset();
             let tail_offset = self
                 .leaf_manager
-                .write()
+                .read()
                 .unwrap()
                 .write_data(self.id, offset, key, value)?;
 
@@ -92,7 +91,7 @@ impl Node for Leaf {
             self.header
                 .set_kv_info(slot, offset, key.len(), value.len());
             self.leaf_manager
-                .write()
+                .read()
                 .unwrap()
                 .commit_header(self.id, &self.header)?;
         }
@@ -220,7 +219,7 @@ impl Leaf {
                 self.header.unset_slot(slot);
                 if is_committed {
                     self.leaf_manager
-                        .write()
+                        .read()
                         .unwrap()
                         .commit_header(self.id, &self.header)?;
                 }
@@ -238,7 +237,7 @@ impl Leaf {
             let offset = new_header.get_tail_offset();
             let tail_offset = self
                 .leaf_manager
-                .write()
+                .read()
                 .unwrap()
                 .write_data(new_id, offset, &key, &value)?;
 
@@ -251,13 +250,11 @@ impl Leaf {
             new_slot += 1;
         }
 
-        if let Some(next) = self.get_next() {
-            new_header.set_next(self.header.get_next());
-        }
+        new_header.set_next(self.header.get_next());
 
         self.leaf_manager.write().unwrap().return_leaf(self.id);
         self.leaf_manager
-            .write()
+            .read()
             .unwrap()
             .commit_header(new_id, &new_header)?;
         self.id = new_id;

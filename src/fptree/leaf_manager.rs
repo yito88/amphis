@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
+use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
 use crate::data_utility;
@@ -37,7 +38,7 @@ const DATA_UNIT: usize = 4 * 1024;
 pub struct LeafManager {
     leaves_file: File,
     free_leaves: VecDeque<usize>,
-    header_mmap: Vec<MmapMut>,
+    header_mmap: Vec<Arc<RwLock<MmapMut>>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -97,7 +98,7 @@ impl LeafManager {
         }
 
         let new_id = self.free_leaves.pop_front().unwrap();
-        self.header_mmap.push(self.mmap_header(new_id)?);
+        self.header_mmap.push(Arc::new(RwLock::new(self.mmap_header(new_id)?)));
 
         trace!("New leaf is allocated: {}", new_id);
         Ok((new_id, LeafHeader::new()))
@@ -136,8 +137,8 @@ impl LeafManager {
         Ok(mmap)
     }
 
-    pub fn commit_header(&mut self, id: usize, header: &LeafHeader) -> Result<(), std::io::Error> {
-        let mmap = &mut self.header_mmap[id];
+    pub fn commit_header(&self, id: usize, header: &LeafHeader) -> Result<(), std::io::Error> {
+        let mut mmap = self.header_mmap[id].write().unwrap();
         let mut encoded: Vec<u8> = match bincode::serialize(header) {
             Ok(b) => b,
             // TODO: replace with an amphis error
@@ -184,7 +185,7 @@ impl LeafManager {
     }
 
     pub fn write_data(
-        &mut self,
+        &self,
         id: usize,
         offset: usize,
         key: &Vec<u8>,

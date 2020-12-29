@@ -32,7 +32,7 @@ impl FPTree {
         Ok(FPTree {
             root_ptr: Arc::new(RwLock::new(first_leaf.clone())),
             mutex: Arc::new(Mutex::new(0)),
-            first_leaf: first_leaf.clone(),
+            first_leaf: first_leaf,
         })
     }
 
