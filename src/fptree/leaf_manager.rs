@@ -18,6 +18,7 @@ const LEAF_SIZE: usize = 256 * 1024;
 const RECLAMATION_THRESHOLD: usize = LEAF_SIZE / 2;
 const RECLAMATION_RATE: f32 = 0.5;
 
+// for header format
 const LEN_BITMAP: usize = NUM_SLOT / 8;
 const LEN_NEXT: usize = 4;
 const LEN_TAIL_OFFSET: usize = 4;
@@ -29,7 +30,9 @@ const LEAF_HEADER_SIZE: usize = LEN_BITMAP
     + LEN_FINGERPRINTS
     + LEN_KV_INFO
     + data_utility::LEN_CRC;
-const DATA_OFFSET: usize = 4 * 1024;
+
+// alignment
+const DATA_UNIT: usize = 4 * 1024;
 
 pub struct LeafManager {
     leaves_file: File,
@@ -100,6 +103,10 @@ impl LeafManager {
         Ok((new_id, LeafHeader::new()))
     }
 
+    pub fn return_leaf(&mut self, id: usize) {
+        self.free_leaves.push_back(id);
+    }
+
     fn allocate_new_leaves(&mut self) -> Result<(), std::io::Error> {
         trace!("New leaf group is allocated");
         let file_size = self.leaves_file.metadata()?.len() as usize;
@@ -156,14 +163,14 @@ impl LeafManager {
         value_size: usize,
     ) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
         let data_offset = id * LEAF_SIZE + offset;
-        let data_size = key_size + value_size + data_utility::LEN_REDUNDANCY * 2;
+        let data_size = data_utility::get_data_size(key_size, value_size);
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(data_offset as u64)
                 .len(data_size)
                 .map(&self.leaves_file)?
         };
-        let bound_offset = key_size + data_utility::LEN_REDUNDANCY;
+        let bound_offset = data_utility::get_bound_offset(key_size);
         data_utility::check_kv_crc(&mmap[..bound_offset])?;
         data_utility::check_kv_crc(&mmap[bound_offset..])?;
 
@@ -183,7 +190,7 @@ impl LeafManager {
         key: &Vec<u8>,
         value: &Vec<u8>,
     ) -> Result<usize, std::io::Error> {
-        let data_size = key.len() + value.len() + data_utility::LEN_REDUNDANCY * 2;
+        let data_size = data_utility::get_data_size(key.len(), value.len());
         let data_offset = id * LEAF_SIZE + offset;
         let mut mmap = unsafe {
             MmapOptions::new()
@@ -196,7 +203,8 @@ impl LeafManager {
         mmap.copy_from_slice(&data);
         mmap.flush()?;
 
-        Ok(offset + data_size)
+        let aligned_tail = offset + ((data_size + DATA_UNIT - 1) / DATA_UNIT) * DATA_UNIT;
+        Ok(aligned_tail)
     }
 }
 
@@ -204,10 +212,10 @@ impl LeafHeader {
     pub fn new() -> Self {
         LeafHeader {
             bitmap: [0u8; NUM_SLOT / 8],
-            next: 0u32,
+            next: u32::MAX,
             fingerprints: [0u8; NUM_SLOT],
             kv_info: [KVInfo::new(); NUM_SLOT],
-            tail_offset: DATA_OFFSET as u32,
+            tail_offset: DATA_UNIT as u32,
         }
     }
 
@@ -227,7 +235,7 @@ impl LeafHeader {
         for slot in 0..NUM_SLOT {
             if self.is_slot_set(slot) {
                 let (_, key_size, value_size) = self.kv_info[slot].get();
-                valid_size += key_size + value_size + data_utility::LEN_REDUNDANCY * 2;
+                valid_size += data_utility::get_data_size(key_size, value_size);
             }
         }
 
@@ -363,7 +371,7 @@ mod tests {
             next: 0u32,
             fingerprints: [0u8; NUM_SLOT],
             kv_info: [KVInfo::new(); NUM_SLOT],
-            tail_offset: DATA_OFFSET as u32,
+            tail_offset: DATA_UNIT as u32,
         }
     }
 
@@ -391,7 +399,7 @@ mod tests {
         let key_size = 2 * 1024;
         let value_size = 4 * 1024;
         for i in 0..32 {
-            offset += key_size + value_size + data_utility::LEN_REDUNDANCY * 2;
+            offset += data_utility::get_data_size(key_size, value_size);
             if i % 3 == 0 {
                 header.set_slot(i);
             }

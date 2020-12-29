@@ -61,10 +61,9 @@ impl Node for Leaf {
         let mut ret: Option<Vec<u8>> = None;
 
         self.invalidate_data(key, false)?;
-        // TODO: reclamation
-        //if self.header.need_reclamation() {
-        //    self.reclaim()?;
-        //}
+        if self.header.need_reclamation() {
+            self.reclaim()?;
+        }
 
         let data_size = key.len() + value.len();
         if self.header.need_split(data_size) {
@@ -235,19 +234,7 @@ impl Leaf {
     fn reclaim(&mut self) -> Result<(), std::io::Error> {
         let (new_id, mut new_header) = self.leaf_manager.write().unwrap().get_free_leaf()?;
         let mut new_slot: usize = 0;
-        for slot in 0..NUM_SLOT {
-            if !self.header.is_slot_set(slot) {
-                continue;
-            }
-
-            let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
-            let (key, value) = self.leaf_manager.read().unwrap().read_data(
-                self.id,
-                data_offset,
-                key_size,
-                value_size,
-            )?;
-
+        for (key, value, slot) in self.get_sorted_kv_pairs()? {
             let offset = new_header.get_tail_offset();
             let tail_offset = self
                 .leaf_manager
@@ -255,6 +242,7 @@ impl Leaf {
                 .unwrap()
                 .write_data(new_id, offset, &key, &value)?;
 
+            self.header.unset_slot(slot);
             new_header.set_slot(new_slot);
             new_header.set_tail_offset(tail_offset);
             new_header.set_fingerprint(new_slot, self.header.get_fingerprints()[slot]);
@@ -263,13 +251,17 @@ impl Leaf {
             new_slot += 1;
         }
 
+        if let Some(next) = self.get_next() {
+            new_header.set_next(self.header.get_next());
+        }
+
+        self.leaf_manager.write().unwrap().return_leaf(self.id);
         self.leaf_manager
             .write()
             .unwrap()
             .commit_header(new_id, &new_header)?;
         self.id = new_id;
         self.header = new_header;
-        // TODO: give the previous leaf page back
 
         Ok(())
     }
@@ -284,7 +276,7 @@ impl std::fmt::Display for Leaf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const DATA_OFFSET: usize = 4 * 1024;
+    const DATA_UNIT: usize = 4 * 1024;
 
     fn make_new_leaf(id: usize) -> Leaf {
         let mut mock_leaf_manager = LeafManager::default();
@@ -322,20 +314,20 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + 1));
+            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
 
         let k = "key".as_bytes().to_vec();
         let v = "value".as_bytes().to_vec();
 
         leaf.insert(&k, &v).unwrap();
 
-        let expected_tail_offset = DATA_OFFSET + 1;
+        let expected_tail_offset = DATA_UNIT * 2;
         assert!(leaf.header.is_slot_set(0));
         assert_eq!(leaf.header.get_fingerprints()[0], 192);
         assert_eq!(leaf.header.get_tail_offset(), expected_tail_offset);
         assert_eq!(
             leaf.header.get_kv_info(0),
-            (expected_tail_offset - 1, k.len(), v.len())
+            (expected_tail_offset - DATA_UNIT, k.len(), v.len())
         );
     }
 
@@ -346,7 +338,7 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + 1));
+            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
 
         let any_slot = NUM_SLOT / 2;
         for i in 0..any_slot {
@@ -363,13 +355,13 @@ mod tests {
 
         leaf.insert(&k, &v).unwrap();
 
-        let expected_tail_offset = DATA_OFFSET + any_slot + 1;
+        let expected_tail_offset = DATA_UNIT + (any_slot + 1) * DATA_UNIT;
         assert!(leaf.header.is_slot_set(any_slot));
         assert_eq!(leaf.header.get_fingerprints()[any_slot], 192);
         assert_eq!(leaf.header.get_tail_offset(), expected_tail_offset);
         assert_eq!(
             leaf.header.get_kv_info(any_slot),
-            (DATA_OFFSET + any_slot, k.len(), v.len())
+            ((any_slot + 1) * DATA_UNIT, k.len(), v.len())
         );
     }
 
@@ -380,13 +372,13 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + 1));
+            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
         leaf.leaf_manager
             .write()
             .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
-                let kv = vec![(offset - DATA_OFFSET) as u8];
+                let kv = vec![(offset / DATA_UNIT - 1) as u8];
                 Ok((kv.clone(), kv.clone()))
             });
 
@@ -411,13 +403,13 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + 1));
+            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
         leaf.leaf_manager
             .write()
             .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
-                let kv = vec![(offset - DATA_OFFSET) as u8];
+                let kv = vec![((offset / DATA_UNIT) - 1) as u8];
                 Ok((kv.clone(), kv.clone()))
             });
 
@@ -431,7 +423,10 @@ mod tests {
         leaf.delete(&k).unwrap();
 
         assert!(!leaf.header.is_slot_set(3));
-        assert_eq!(leaf.header.get_kv_info(3), (DATA_OFFSET + 3, 1, 1));
+        assert_eq!(
+            leaf.header.get_kv_info(3),
+            (DATA_UNIT + DATA_UNIT * 3, 1, 1)
+        );
     }
 
     #[test]
@@ -441,13 +436,13 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + 1));
+            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
         leaf.leaf_manager
             .write()
             .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
-                let kv = vec![(offset - DATA_OFFSET) as u8];
+                let kv = vec![(offset / DATA_UNIT - 1) as u8];
                 Ok((kv.clone(), kv.clone()))
             });
 
@@ -461,12 +456,12 @@ mod tests {
         let v2 = vec![5u8];
         leaf.insert(&k, &v2).unwrap();
 
-        let expected_tail_offset = DATA_OFFSET + 6;
+        let expected_tail_offset = DATA_UNIT + DATA_UNIT * 6;
         assert!(leaf.header.is_slot_set(3));
         assert_eq!(leaf.header.get_tail_offset(), expected_tail_offset);
         assert_eq!(
             leaf.header.get_kv_info(3),
-            (expected_tail_offset - 1, k.len(), v2.len())
+            (expected_tail_offset - DATA_UNIT, k.len(), v2.len())
         );
     }
 
@@ -476,14 +471,19 @@ mod tests {
         leaf.leaf_manager
             .write()
             .unwrap()
+            .expect_return_leaf()
+            .returning(|_| ());
+        leaf.leaf_manager
+            .write()
+            .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + 1));
+            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
         leaf.leaf_manager
             .write()
             .unwrap()
             .expect_read_data()
             .returning(|_, offset, _, _| {
-                let kv = vec![(offset - DATA_OFFSET) as u8];
+                let kv = vec![(offset / DATA_UNIT - 1) as u8];
                 Ok((kv.clone(), kv.clone()))
             });
 
@@ -511,6 +511,11 @@ mod tests {
         leaf.leaf_manager
             .write()
             .unwrap()
+            .expect_return_leaf()
+            .returning(|_| ());
+        leaf.leaf_manager
+            .write()
+            .unwrap()
             .expect_write_data()
             .returning(|_, offset, key, value| Ok(offset + key.len() + value.len()));
         leaf.leaf_manager
@@ -519,8 +524,8 @@ mod tests {
             .expect_read_data()
             .returning(|_, offset, key_size, value_size| {
                 let data_size = key_size + value_size;
-                let k = vec![((offset - DATA_OFFSET) / data_size) as u8 % 3; key_size];
-                let v = vec![((offset - DATA_OFFSET) / data_size) as u8; value_size];
+                let k = vec![((offset - DATA_UNIT) / data_size) as u8 % 3; key_size];
+                let v = vec![((offset - DATA_UNIT) / data_size) as u8; value_size];
                 Ok((k.clone(), v.clone()))
             });
 
@@ -534,7 +539,7 @@ mod tests {
 
         assert!((0..3).all(|i| leaf.header.is_slot_set(i)));
         assert!((3..NUM_SLOT).all(|i| !leaf.header.is_slot_set(i)));
-        let expected_tail_offset = DATA_OFFSET + 3 * 4096;
+        let expected_tail_offset = DATA_UNIT + 3 * 4096;
         assert_eq!(leaf.header.get_tail_offset(), expected_tail_offset);
     }
 }

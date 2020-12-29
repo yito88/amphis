@@ -23,7 +23,7 @@ impl FlushWriter {
         }
     }
 
-    fn run(&mut self) -> Result<(), std::io::Error> {
+    fn flush(&mut self) -> Result<(), std::io::Error> {
         let first_leaf = self.fptree.read().unwrap().get_first_leaf();
         let mut locked_leaves = Vec::new();
         locked_leaves.push(first_leaf.clone());
@@ -43,7 +43,7 @@ impl FlushWriter {
         }
 
         let table_file = self.create_new_table()?;
-        let mut writer = BufWriter::new(table_file);
+        let mut writer = BufWriter::new(&table_file);
         for locked_leaf in locked_leaves {
             let kv_pairs = locked_leaf.read().unwrap().get_sorted_kv_pairs()?;
             // it is enough to sort only kv_pairs since all leaves are ordered
@@ -51,6 +51,7 @@ impl FlushWriter {
                 writer.write(&data_utility::format_data_with_crc(&pair.0, &pair.1))?;
             }
         }
+        table_file.sync_all()?;
 
         Ok(())
     }
