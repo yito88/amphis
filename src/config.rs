@@ -18,7 +18,11 @@ impl Config {
         config
     }
 
-    pub fn get_leaf_file_path(&self) -> String {
-        format!("{}{}", self.data_dir, "/leaves.amph")
+    pub fn get_data_dir_path(&self, name: &str) -> String {
+        format!("{}/{}", self.data_dir, name)
+    }
+
+    pub fn get_leaf_file_path(&self, name: &str, id: usize) -> String {
+        format!("{}/{}-{}.amph", self.get_data_dir_path(name), "leaves", id)
     }
 }

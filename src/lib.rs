@@ -5,3 +5,4 @@ pub mod kvs;
 
 mod flush_writer;
 mod fptree;
+mod sstable;

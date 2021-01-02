@@ -20,7 +20,7 @@ fn main() {
 
 fn seq_insert(num_elements: usize) {
     let config = amphis::config::Config::new();
-    let kvs = amphis::kvs::KVS::new(config).unwrap();
+    let kvs = amphis::kvs::KVS::new("test", config).unwrap();
 
     for i in 0..num_elements {
         let key = "k".to_string() + &i.to_string();
@@ -51,7 +51,7 @@ fn concurrent_insert(num_elements: usize, num_threads: usize) {
     let pool = ThreadPool::new(if num_threads <= 1 { 1 } else { num_threads });
 
     let config = amphis::config::Config::new();
-    let kvs = Arc::new(amphis::kvs::KVS::new(config).unwrap());
+    let kvs = Arc::new(amphis::kvs::KVS::new("test", config).unwrap());
 
     for i in 0..num_threads {
         let each = kvs.clone();

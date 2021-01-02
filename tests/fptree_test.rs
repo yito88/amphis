@@ -8,11 +8,11 @@ fn test_mutations() {
     let _ = env_logger::builder().is_test(true).try_init();
     const NUM_INSERTION: usize = 1025;
     const DATA_DIR: &str = "tests/test_data";
+    const TABLE_NAME: &str = "test";
     let config = Config {
         data_dir: DATA_DIR.to_string(),
     };
-    std::fs::create_dir(DATA_DIR).unwrap();
-    let kvs = KVS::new(config).unwrap();
+    let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
 
     // INSERT
     for i in 0..NUM_INSERTION {
@@ -54,6 +54,6 @@ fn test_mutations() {
         }
     }
 
-    std::fs::remove_file(format!("{}/{}", DATA_DIR, "leaves.amph")).unwrap();
-    std::fs::remove_dir(DATA_DIR).unwrap();
+    std::fs::remove_file(config.get_leaf_file_path(TABLE_NAME, 0)).unwrap();
+    std::fs::remove_dir(config.get_data_dir_path(TABLE_NAME)).unwrap();
 }

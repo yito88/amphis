@@ -64,7 +64,7 @@ impl FlushWriter {
             ".amph"
         );
         let table_file = File::create(&table_file_path)?;
-        self.table_index += 1;
+        self.table_index += 2;
 
         Ok(table_file)
     }

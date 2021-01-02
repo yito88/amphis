@@ -2,33 +2,30 @@
 use crate::flush_writer::FlushWriter;
 use crate::fptree::fptree::FPTree;
 use log::trace;
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::sync::Weak;
+use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
 
 pub struct KVS {
+    name: String,
     config: Config,
     fptree: Arc<RwLock<FPTree>>,
     new_fptree: Option<Arc<RwLock<FPTree>>>,
+    fptree_id: usize,
     fptree_written: Arc<()>,
     flush_writer: Arc<FlushWriter>,
 }
 
-#[derive(Clone, Debug)]
-struct CurrentTreeWritten {
-    arc: Arc<()>,
-    latches: Vec<Weak<()>>,
-}
-
 impl KVS {
-    pub fn new(config: Config) -> Result<KVS, std::io::Error> {
-        let fptree = Arc::new(RwLock::new(FPTree::new(&config)?));
+    pub fn new(name: &str, config: Config) -> Result<KVS, std::io::Error> {
+        // TODO: recovery
+        let fptree = Arc::new(RwLock::new(FPTree::new(name, 0, &config)?));
         Ok(KVS {
+            name: name.to_string(),
             config: config.clone(),
             fptree: fptree.clone(),
             new_fptree: None,
+            fptree_id: 0,
             fptree_written: Arc::new(()),
             flush_writer: Arc::new(FlushWriter::new(config.clone(), fptree.clone(), 0)),
         })
@@ -82,18 +79,26 @@ impl KVS {
         self.fptree.read().unwrap().delete(key)
     }
 
-    pub fn flush(&mut self) -> Result<(), std::io::Error> {
-        self.allocate_new_fptree()?;
+    fn flush(&mut self) -> Result<(), std::io::Error> {
+        let new_id = self.fptree_id + 1;
+        self.allocate_new_fptree(new_id)?;
         // check if other threads write data to FPTree
         if Arc::strong_count(&self.fptree_written) != 1 {
             return Ok(());
         }
 
+        //std::fs::remove_file(config.get_leaf_file_path(TABLE_NAME, self.fptree_id)).unwrap()?;
+        self.fptree_id = new_id;
+
         Ok(())
     }
 
-    fn allocate_new_fptree(&mut self) -> Result<(), std::io::Error> {
-        self.new_fptree = Some(Arc::new(RwLock::new(FPTree::new(&self.config)?)));
+    fn allocate_new_fptree(&mut self, new_id: usize) -> Result<(), std::io::Error> {
+        self.new_fptree = Some(Arc::new(RwLock::new(FPTree::new(
+            &self.name,
+            new_id,
+            &self.config,
+        )?)));
 
         Ok(())
     }

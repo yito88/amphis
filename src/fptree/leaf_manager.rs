@@ -59,13 +59,14 @@ struct KVInfo {
 
 #[cfg_attr(test, automock)]
 impl LeafManager {
-    pub fn new(config: &Config) -> Result<Self, std::io::Error> {
-        match std::fs::create_dir_all(&config.data_dir) {
+    pub fn new(name: &str, id: usize, config: &Config) -> Result<Self, std::io::Error> {
+        let data_dir = config.get_data_dir_path(name);
+        match std::fs::create_dir_all(&data_dir) {
             Ok(_) => (),
-            Err(e) => panic!("{} - {}", &config.data_dir, e),
+            Err(e) => panic!("{} - {}", &data_dir, e),
         }
 
-        let leaf_file_path = config.get_leaf_file_path();
+        let leaf_file_path = config.get_leaf_file_path(name, id);
         let file = match OpenOptions::new()
             .read(true)
             .write(true)
@@ -98,7 +99,8 @@ impl LeafManager {
         }
 
         let new_id = self.free_leaves.pop_front().unwrap();
-        self.header_mmap.push(Arc::new(RwLock::new(self.mmap_header(new_id)?)));
+        self.header_mmap
+            .push(Arc::new(RwLock::new(self.mmap_header(new_id)?)));
 
         trace!("New leaf is allocated: {}", new_id);
         Ok((new_id, LeafHeader::new()))
