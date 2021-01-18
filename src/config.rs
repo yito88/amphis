@@ -4,7 +4,8 @@ const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
-    pub data_dir: String,
+    data_dir: String,
+    bloom_filter_size: usize,
 }
 
 impl Config {
@@ -18,11 +19,29 @@ impl Config {
         config
     }
 
+    pub fn new_with_str(s: &str) -> Self {
+        let config: Config = toml::from_str(s).unwrap();
+        config
+    }
+
     pub fn get_data_dir_path(&self, name: &str) -> String {
         format!("{}/{}", self.data_dir, name)
     }
 
     pub fn get_leaf_file_path(&self, name: &str, id: usize) -> String {
         format!("{}/{}-{}.amph", self.get_data_dir_path(name), "leaves", id)
+    }
+
+    pub fn get_table_file_path(&self, name: &str, id: usize) -> String {
+        format!(
+            "{}/{}{}.tbl",
+            self.get_data_dir_path(name),
+            "amphis_table",
+            id
+        )
+    }
+
+    pub fn get_bloom_filter_size(&self) -> usize {
+        self.bloom_filter_size
     }
 }

@@ -32,9 +32,6 @@ const LEAF_HEADER_SIZE: usize = LEN_BITMAP
     + LEN_KV_INFO
     + data_utility::LEN_CRC;
 
-// alignment
-const DATA_UNIT: usize = 4 * 1024;
-
 pub struct LeafManager {
     leaves_file: File,
     free_leaves: VecDeque<usize>,
@@ -107,6 +104,7 @@ impl LeafManager {
     }
 
     pub fn return_leaf(&mut self, id: usize) {
+        trace!("Leaf {} is deallocated", id);
         self.free_leaves.push_back(id);
     }
 
@@ -174,8 +172,8 @@ impl LeafManager {
                 .map(&self.leaves_file)?
         };
         let bound_offset = data_utility::get_bound_offset(key_size);
-        data_utility::check_kv_crc(&mmap[..bound_offset])?;
-        data_utility::check_kv_crc(&mmap[bound_offset..])?;
+        data_utility::check_slot_crc(&mmap[..bound_offset])?;
+        data_utility::check_slot_crc(&mmap[bound_offset..])?;
 
         let (key_start, key_end) = data_utility::get_key_offset(key_size);
         let (value_start, value_end) = data_utility::get_value_offset(key_size, value_size);
@@ -206,7 +204,7 @@ impl LeafManager {
         mmap.copy_from_slice(&data);
         mmap.flush()?;
 
-        let aligned_tail = offset + ((data_size + DATA_UNIT - 1) / DATA_UNIT) * DATA_UNIT;
+        let aligned_tail = offset + data_utility::round_up_size(data_size);
         Ok(aligned_tail)
     }
 }
@@ -218,7 +216,7 @@ impl LeafHeader {
             next: u32::MAX,
             fingerprints: [0u8; NUM_SLOT],
             kv_info: [KVInfo::new(); NUM_SLOT],
-            tail_offset: DATA_UNIT as u32,
+            tail_offset: data_utility::DATA_ALIGNMENT as u32,
         }
     }
 
@@ -238,7 +236,8 @@ impl LeafHeader {
         for slot in 0..NUM_SLOT {
             if self.is_slot_set(slot) {
                 let (_, key_size, value_size) = self.kv_info[slot].get();
-                valid_size += data_utility::get_data_size(key_size, value_size);
+                valid_size +=
+                    data_utility::round_up_size(data_utility::get_data_size(key_size, value_size));
             }
         }
 
@@ -281,7 +280,7 @@ impl LeafHeader {
         self.bitmap[idx] &= 0xFF ^ (1 << offset);
     }
 
-    pub fn get_next(&mut self) -> usize {
+    pub fn get_next(&self) -> usize {
         self.next as usize
     }
 
@@ -374,7 +373,7 @@ mod tests {
             next: 0u32,
             fingerprints: [0u8; NUM_SLOT],
             kv_info: [KVInfo::new(); NUM_SLOT],
-            tail_offset: DATA_UNIT as u32,
+            tail_offset: data_utility::DATA_ALIGNMENT as u32,
         }
     }
 

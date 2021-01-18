@@ -16,14 +16,14 @@ An embedded key-value store
   - [x] Simplified FPTree
   - [x] Leaf file
   - [x] Concurrency
-  - [ ] Flush (converted to SSTable)
+  - [x] Flush (converted to SSTable)
   - [ ] Recovery (flush)
   - [ ] tail header (for durable write)
-  - [ ] Reclaim a leaf page
+  - [x] Reclaim a leaf page
   - [ ] Extended leaf page
 
 - SSTable
-  - [ ] SSTable file
-  - [ ] Bloom filter
+  - [x] SSTable file
+  - [x] Bloom filter
   - [ ] Compaction
   - [ ] Recovery

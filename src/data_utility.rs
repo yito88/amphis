@@ -3,7 +3,8 @@ use std::convert::TryInto;
 use std::io::ErrorKind;
 
 // TODO: parameterize them
-const LEN_SIZE: usize = 4;
+pub const DATA_ALIGNMENT: usize = 1 << 12;
+pub const LEN_SIZE: usize = 4;
 pub const LEN_CRC: usize = 4;
 const LEN_REDUNDANCY: usize = LEN_SIZE + LEN_CRC;
 
@@ -25,6 +26,10 @@ pub fn format_data_with_crc(key: &Vec<u8>, value: &Vec<u8>) -> Vec<u8> {
     data.extend(&calc_crc(value).to_le_bytes());
 
     data
+}
+
+pub fn round_up_size(size: usize) -> usize {
+    ((size + DATA_ALIGNMENT - 1) / DATA_ALIGNMENT) * DATA_ALIGNMENT
 }
 
 pub fn get_key_offset(key_size: usize) -> (usize, usize) {
@@ -56,16 +61,19 @@ pub fn calc_crc(data: &Vec<u8>) -> u32 {
     digest.sum32()
 }
 
-pub fn check_kv_crc(bytes: &[u8]) -> Result<(), std::io::Error> {
-    let len = bytes.len();
-    let crc = u32::from_le_bytes(bytes[(len - LEN_CRC)..len].try_into().unwrap());
-    let size = u32::from_le_bytes(bytes[0..LEN_SIZE].try_into().unwrap());
-    let data = bytes[LEN_SIZE..(LEN_SIZE + size as usize)].to_vec();
-
-    if calc_crc(&data) == crc {
+pub fn check_crc(data: &[u8], crc: u32) -> Result<(), std::io::Error> {
+    if calc_crc(&data.to_vec()) == crc {
         Ok(())
     } else {
         // TODO: replace with an amphis error
         Err(std::io::Error::new(ErrorKind::Other, "CRC check failed!"))
     }
+}
+
+pub fn check_slot_crc(bytes: &[u8]) -> Result<(), std::io::Error> {
+    let len = bytes.len();
+    let size = u32::from_le_bytes(bytes[0..LEN_SIZE].try_into().unwrap());
+    let crc = u32::from_le_bytes(bytes[(len - LEN_CRC)..len].try_into().unwrap());
+
+    check_crc(&bytes[LEN_SIZE..(LEN_SIZE + size as usize)], crc)
 }

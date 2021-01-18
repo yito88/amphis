@@ -16,7 +16,7 @@ use super::node::Node;
 
 pub struct Leaf {
     leaf_manager: Arc<RwLock<LeafManager>>,
-    header: LeafHeader,
+    pub header: LeafHeader,
     id: usize,
     next: Option<Arc<RwLock<Leaf>>>,
     is_root: bool,
@@ -134,11 +134,18 @@ impl Node for Leaf {
             self.header.unset_slot(slot);
         }
 
-        trace!("split existing leaf: {}", self);
+        if let Some(n) = &self.next {
+            new_leaf.header.set_next(self.header.get_next());
+            new_leaf.next = Some(n.clone());
+        }
+
         trace!("new leaf: {}", new_leaf);
-        trace!("split_key: {:?}", split_key.clone());
+
         self.header.set_next(new_leaf.id);
         self.next = Some(Arc::new(RwLock::new(new_leaf)));
+
+        trace!("split existing leaf: {}", self);
+        trace!("split_key: {:?}", split_key.clone());
 
         Ok(split_key)
     }
@@ -231,6 +238,7 @@ impl Leaf {
     }
 
     fn reclaim(&mut self) -> Result<(), std::io::Error> {
+        trace!("Reclaim a leaf: {}", self);
         let (new_id, mut new_header) = self.leaf_manager.write().unwrap().get_free_leaf()?;
         let mut new_slot: usize = 0;
         for (key, value, slot) in self.get_sorted_kv_pairs()? {

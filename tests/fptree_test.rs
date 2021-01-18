@@ -9,9 +9,8 @@ fn test_mutations() {
     const NUM_INSERTION: usize = 1025;
     const DATA_DIR: &str = "tests/test_data";
     const TABLE_NAME: &str = "test";
-    let config = Config {
-        data_dir: DATA_DIR.to_string(),
-    };
+    let conf = "data_dir = 'data'\nbloom_filter_size = 32768";
+    let config = Config::new_with_str(conf);
     let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
 
     // INSERT
