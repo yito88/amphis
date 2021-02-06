@@ -59,7 +59,7 @@ impl Node for Leaf {
     ) -> Result<Option<Vec<u8>>, std::io::Error> {
         let mut ret: Option<Vec<u8>> = None;
 
-        self.invalidate_data(key, false)?;
+        self.invalidate_data(key)?;
         if self.header.need_reclamation() {
             self.reclaim()?;
         }
@@ -116,10 +116,6 @@ impl Node for Leaf {
         }
 
         Ok(None)
-    }
-
-    fn delete(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
-        self.invalidate_data(key, true)
     }
 
     fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
@@ -213,7 +209,7 @@ impl Leaf {
         slots
     }
 
-    fn invalidate_data(&mut self, key: &Vec<u8>, is_committed: bool) -> Result<(), std::io::Error> {
+    fn invalidate_data(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
         for slot in self.get_existing_slots(key) {
             let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
             let (actual_key, _value) = self.leaf_manager.read().unwrap().read_data(
@@ -224,12 +220,6 @@ impl Leaf {
             )?;
             if actual_key == *key {
                 self.header.unset_slot(slot);
-                if is_committed {
-                    self.leaf_manager
-                        .read()
-                        .unwrap()
-                        .commit_header(self.id, &self.header)?;
-                }
                 break;
             }
         }
@@ -399,39 +389,6 @@ mod tests {
 
         let k = vec![8 as u8];
         assert_eq!(leaf.get(&k).unwrap(), None);
-    }
-
-    #[test]
-    fn test_delete() {
-        let mut leaf = make_new_leaf(0);
-        leaf.leaf_manager
-            .write()
-            .unwrap()
-            .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
-        leaf.leaf_manager
-            .write()
-            .unwrap()
-            .expect_read_data()
-            .returning(|_, offset, _, _| {
-                let kv = vec![((offset / DATA_UNIT) - 1) as u8];
-                Ok((kv.clone(), kv.clone()))
-            });
-
-        for i in 0..5 {
-            let k = vec![i as u8];
-            let v = vec![i as u8];
-            leaf.insert(&k, &v).unwrap();
-        }
-
-        let k = vec![3u8];
-        leaf.delete(&k).unwrap();
-
-        assert!(!leaf.header.is_slot_set(3));
-        assert_eq!(
-            leaf.header.get_kv_info(3),
-            (DATA_UNIT + DATA_UNIT * 3, 1, 1)
-        );
     }
 
     #[test]

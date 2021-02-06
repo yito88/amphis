@@ -33,12 +33,7 @@ impl Config {
     }
 
     pub fn get_table_file_path(&self, name: &str, id: usize) -> String {
-        format!(
-            "{}/{}{}.tbl",
-            self.get_data_dir_path(name),
-            "amphis_table",
-            id
-        )
+        format!("{}/sstable-{}.amph", self.get_data_dir_path(name), id)
     }
 
     pub fn get_bloom_filter_size(&self) -> usize {

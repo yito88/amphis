@@ -36,6 +36,11 @@ impl SstableManager {
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         for (table_id, filter) in self.filters.read().unwrap().iter().rev() {
+            trace!(
+                "Check the bloom filter of SSTable {} with {:?}",
+                table_id,
+                key
+            );
             if !filter.check(key) {
                 continue;
             }

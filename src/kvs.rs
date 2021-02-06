@@ -56,7 +56,16 @@ impl KVS {
             None => self.sstable_manager.get(key)?,
         };
 
-        Ok(result)
+        match result {
+            Some(v) => {
+                if v.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(v))
+                }
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn delete(&self, key: &Vec<u8>) -> Result<(), std::io::Error> {

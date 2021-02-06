@@ -46,7 +46,7 @@ impl FlushWriter {
                 None => break,
             };
             trace!(
-                "flush a leaf to SSTable {} - {}",
+                "starting to flush a leaf to SSTable {} - {}",
                 self.table_id,
                 leaf.read().unwrap().header
             );

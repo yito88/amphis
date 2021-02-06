@@ -8,7 +8,7 @@ use crate::fptree::fptree::FPTree;
 use crate::sstable::sparse_index::SparseIndex;
 
 // TODO: parameterize
-const SPLIT_THRESHOLD: usize = 3;
+const SPLIT_THRESHOLD: usize = 6;
 
 pub struct FPTreeManager {
     name: String,
@@ -130,16 +130,21 @@ impl FPTreeManager {
     pub fn post_flush(&self) -> Result<(), std::io::Error> {
         let mut locked_fptree_id = self.fptree_id.write().unwrap();
         let mut locked_new = self.new_fptree_ptr.write().unwrap();
-        if let Some(n) = &*locked_new {
-            let leaf_file = self
-                .config
-                .get_leaf_file_path(&self.name, *locked_fptree_id);
-            std::fs::remove_file(leaf_file)?;
+        match &*locked_new {
+            Some(n) => {
+                let leaf_file = self
+                    .config
+                    .get_leaf_file_path(&self.name, *locked_fptree_id);
+                std::fs::remove_file(leaf_file)?;
 
-            *self.fptree_ptr.write().unwrap() = n.clone();
-            *locked_new = None;
-            *locked_fptree_id += 1;
+                *self.fptree_ptr.write().unwrap() = n.clone();
+                *locked_new = None;
+                *locked_fptree_id += 1;
+            }
+            None => panic!("no new FPTree after a flush"),
         }
+
+        trace!("completed flushing FPTree {}", *locked_fptree_id - 1);
 
         Ok(())
     }

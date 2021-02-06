@@ -174,14 +174,16 @@ impl LeafManager {
         let bound_offset = data_utility::get_bound_offset(key_size);
         data_utility::check_slot_crc(&mmap[..bound_offset])?;
         data_utility::check_slot_crc(&mmap[bound_offset..])?;
-
         let (key_start, key_end) = data_utility::get_key_offset(key_size);
-        let (value_start, value_end) = data_utility::get_value_offset(key_size, value_size);
-
-        Ok((
-            mmap[key_start..key_end].to_vec(),
-            mmap[value_start..value_end].to_vec(),
-        ))
+        if value_size == 0 {
+            Ok((mmap[key_start..key_end].to_vec(), Vec::new()))
+        } else {
+            let (value_start, value_end) = data_utility::get_value_offset(key_size, value_size);
+            Ok((
+                mmap[key_start..key_end].to_vec(),
+                mmap[value_start..value_end].to_vec(),
+            ))
+        }
     }
 
     pub fn write_data(

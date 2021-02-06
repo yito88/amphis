@@ -138,16 +138,7 @@ impl FPTree {
     }
 
     pub fn delete(&self, key: &Vec<u8>) -> Result<(), std::io::Error> {
-        // TODO: add a tombstone
-        let mut node = self.root_ptr.read().unwrap().clone();
-        loop {
-            let n = node.clone();
-            let mut node_guard = n.write().unwrap();
-            if node_guard.is_leaf() {
-                return node_guard.delete(key);
-            }
-
-            node = node_guard.get_child(key).unwrap().clone();
-        }
+        // just add a tombstone
+        self.put(key, &Vec::new())
     }
 }

@@ -7,9 +7,8 @@ use env_logger;
 fn test_mutations() {
     let _ = env_logger::builder().is_test(true).try_init();
     const NUM_INSERTION: usize = 1025;
-    const DATA_DIR: &str = "tests/test_data";
     const TABLE_NAME: &str = "test";
-    let conf = "data_dir = 'data'\nbloom_filter_size = 32768";
+    let conf = "data_dir = 'tests/test_data'\nbloom_filter_size = 32768";
     let config = Config::new_with_str(conf);
     let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
 
@@ -53,6 +52,5 @@ fn test_mutations() {
         }
     }
 
-    std::fs::remove_file(config.get_leaf_file_path(TABLE_NAME, 0)).unwrap();
-    std::fs::remove_dir(config.get_data_dir_path(TABLE_NAME)).unwrap();
+    std::fs::remove_dir_all("tests/test_data").unwrap();
 }

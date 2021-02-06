@@ -92,13 +92,6 @@ impl Node for Inner {
         }
     }
 
-    fn delete(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
-        match self.get_child(key) {
-            Some(c) => c.write().unwrap().delete(key),
-            None => Ok(()),
-        }
-    }
-
     fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
         let new_keys = self.keys.split_off((FANOUT + 1) / 2);
         let split_key = new_keys.first().unwrap().clone();
@@ -184,9 +177,6 @@ mod tests {
             } else {
                 Ok(None)
             }
-        }
-        fn delete(&mut self, _key: &Vec<u8>) -> Result<(), std::io::Error> {
-            Ok(())
         }
         fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
             Ok(Vec::new())
