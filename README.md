@@ -1,3 +1,5 @@
+![](https://github.com/yito88/amphis/workflows/Amphis/badge.svg)
+
 # Amphis
 An embedded key-value store
 
@@ -24,6 +26,6 @@ An embedded key-value store
 
 - SSTable
   - [x] SSTable file
-  - [x] Bloom filter
+  - [x] Bloom filter/Sparse index
   - [ ] Compaction
   - [ ] Recovery
