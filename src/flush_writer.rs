@@ -57,7 +57,7 @@ impl FlushWriter {
         let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
         let mut index = SparseIndex::new();
         let mut offset = 0;
-        let table_file = self.create_new_table()?;
+        let (id, table_file) = self.create_new_table()?;
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER, &table_file);
         for locked_leaf in locked_leaves {
             let kv_pairs = locked_leaf.read().unwrap().get_sorted_kv_pairs()?;
@@ -72,17 +72,17 @@ impl FlushWriter {
         }
         table_file.sync_all()?;
 
-        let id = self.table_id;
-        // odd ID used by compactions
-        self.table_id += 2;
-
         Ok((id, filter, index))
     }
 
-    fn create_new_table(&mut self) -> Result<File, std::io::Error> {
-        let table_file_path = self.config.get_table_file_path(&self.name, self.table_id);
+    fn create_new_table(&mut self) -> Result<(usize, File), std::io::Error> {
+        let id = self.table_id;
+        let table_file_path = self.config.get_table_file_path(&self.name, id);
         let table_file = File::create(&table_file_path)?;
 
-        Ok(table_file)
+        // odd ID used by compactions
+        self.table_id += 2;
+
+        Ok((id, table_file))
     }
 }

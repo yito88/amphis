@@ -39,4 +39,12 @@ impl Config {
     pub fn get_bloom_filter_size(&self) -> usize {
         self.bloom_filter_size
     }
+
+    pub fn get_filter_file_path(&self, name: &str) -> String {
+        format!("{}/filter.amph", self.get_data_dir_path(name))
+    }
+
+    pub fn get_index_file_path(&self, name: &str) -> String {
+        format!("{}/index.amph", self.get_data_dir_path(name))
+    }
 }

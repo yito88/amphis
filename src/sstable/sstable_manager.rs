@@ -2,12 +2,15 @@ use bloomfilter::Bloom;
 use log::trace;
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::io::ErrorKind;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufWriter, Write};
 use std::sync::{Arc, RwLock};
 
 use super::sparse_index::SparseIndex;
 use crate::config::Config;
 use crate::data_utility;
+use crate::file_utility;
 
 const READ_BUFFER_SIZE: usize = 1 << 16;
 
@@ -29,9 +32,19 @@ impl SstableManager {
         }
     }
 
-    pub fn register_table(&self, table_id: usize, filter: Bloom<Vec<u8>>, index: SparseIndex) {
+    pub fn register(
+        &self,
+        table_id: usize,
+        filter: Bloom<Vec<u8>>,
+        index: SparseIndex,
+    ) -> Result<(), std::io::Error> {
+        self.write_filter(table_id, &filter)?;
+        self.write_index(table_id, &index)?;
+
         self.filters.write().unwrap().insert(table_id, filter);
         self.indexes.write().unwrap().insert(table_id, index);
+
+        Ok(())
     }
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
@@ -101,5 +114,59 @@ impl SstableManager {
         data_utility::check_crc(data.as_slice(), crc)?;
 
         Ok(Some(data))
+    }
+
+    fn write_filter(&self, table_id: usize, filter: &Bloom<Vec<u8>>) -> Result<(), std::io::Error> {
+        let file_path = self.config.get_filter_file_path(&self.name);
+        let file = file_utility::open_file(&file_path)?;
+        let mut writer = BufWriter::new(&file);
+
+        let mut encoded: Vec<u8> = Vec::new();
+        encoded.extend(&(table_id as u32).to_le_bytes());
+        encoded.extend(&(filter.number_of_bits() / 8).to_le_bytes());
+        encoded.extend(filter.bitmap());
+        encoded.extend(&filter.number_of_hash_functions().to_le_bytes());
+        let [k1, k2] = filter.sip_keys();
+        encoded.extend(&k1.0.to_le_bytes());
+        encoded.extend(&k1.1.to_le_bytes());
+        encoded.extend(&k2.0.to_le_bytes());
+        encoded.extend(&k2.1.to_le_bytes());
+
+        let mut data: Vec<u8> = Vec::new();
+        data.extend(&(encoded.len() as u32).to_le_bytes());
+        data.extend(&encoded);
+        data.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
+
+        writer.write(&data)?;
+
+        Ok(())
+    }
+
+    fn write_index(&self, table_id: usize, index: &SparseIndex) -> Result<(), std::io::Error> {
+        let file_path = self.config.get_index_file_path(&self.name);
+        let file = file_utility::open_file(&file_path)?;
+        let mut writer = BufWriter::new(&file);
+
+        let mut encoded: Vec<u8> = Vec::new();
+        encoded.extend(&(table_id as u32).to_le_bytes());
+        encoded.extend(match bincode::serialize(&index) {
+            Ok(b) => b,
+            // TODO: replace with an amphis error
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    "failed to serialize a sparse index",
+                ))
+            }
+        });
+
+        let mut data: Vec<u8> = Vec::new();
+        data.extend(&(encoded.len() as u32).to_le_bytes());
+        data.extend(&encoded);
+        data.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
+
+        writer.write(&data)?;
+
+        Ok(())
     }
 }

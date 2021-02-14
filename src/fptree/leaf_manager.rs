@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
 use crate::data_utility;
+use crate::file_utility;
 
 #[cfg(test)]
 use mockall::automock;
@@ -63,24 +64,8 @@ impl LeafManager {
             Err(e) => panic!("{} - {}", &data_dir, e),
         }
 
-        let leaf_file_path = config.get_leaf_file_path(name, id);
-        let file = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&leaf_file_path)
-        {
-            Ok(f) => f,
-            Err(e) => match e.kind() {
-                ErrorKind::NotFound => {
-                    warn!("a new leaf file is created");
-                    let f = File::create(&leaf_file_path)?;
-                    f.sync_all()?;
-                    f
-                }
-                _ => return Err(e),
-            },
-        };
+        let file_path = config.get_leaf_file_path(name, id);
+        let file = file_utility::open_file(&file_path)?;
 
         // TODO: recovery
         Ok(LeafManager {

@@ -36,7 +36,7 @@ impl KVS {
         // TODO: make a flush process async
         if self.fptree_manager.need_flush() {
             if let Some((table_id, filter, index)) = self.fptree_manager.flush()? {
-                self.sstable_manager.register_table(table_id, filter, index);
+                self.sstable_manager.register(table_id, filter, index)?;
                 self.fptree_manager.post_flush()?;
             }
         }

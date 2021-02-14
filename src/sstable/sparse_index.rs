@@ -1,8 +1,10 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 // TODO: parameterize
 const LEAST_OFFSET: usize = 1 << 18;
 
+#[derive(Serialize, Deserialize)]
 pub struct SparseIndex {
     prev_offset: usize,
     index: BTreeMap<Vec<u8>, usize>,
