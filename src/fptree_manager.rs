@@ -1,11 +1,9 @@
-use bloomfilter::Bloom;
 use log::trace;
 use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
-use crate::flush_writer::FlushWriter;
 use crate::fptree::fptree::FPTree;
-use crate::sstable::sparse_index::SparseIndex;
+use crate::fptree::leaf::Leaf;
 
 // TODO: parameterize
 const SPLIT_THRESHOLD: usize = 6;
@@ -17,7 +15,6 @@ pub struct FPTreeManager {
     new_fptree_ptr: Arc<RwLock<Option<Arc<RwLock<FPTree>>>>>,
     fptree_id: Arc<RwLock<usize>>,
     fptree_written: Arc<()>,
-    flush_writer: Arc<RwLock<FlushWriter>>,
 }
 
 impl FPTreeManager {
@@ -33,7 +30,6 @@ impl FPTreeManager {
             new_fptree_ptr: Arc::new(RwLock::new(None)),
             fptree_id: Arc::new(RwLock::new(fptree_id)),
             fptree_written: Arc::new(()),
-            flush_writer: Arc::new(RwLock::new(FlushWriter::new(name, config.clone(), 0))),
         })
     }
 
@@ -89,7 +85,7 @@ impl FPTreeManager {
         self.fptree_ptr.read().unwrap().read().unwrap().delete(key)
     }
 
-    pub fn flush(&self) -> Result<Option<(usize, Bloom<Vec<u8>>, SparseIndex)>, std::io::Error> {
+    pub fn prepare_flush(&self) -> Result<Option<Arc<RwLock<Leaf>>>, std::io::Error> {
         let locked_fptree_id = self.fptree_id.write().unwrap();
 
         // re-check since another thread might have already flushed
@@ -108,26 +104,23 @@ impl FPTreeManager {
             *locked_fptree_id + 1,
             &self.config,
         )?)));
-        drop(locked_new);
 
         // check if other threads write data to the current FPTree
         if Arc::strong_count(&self.fptree_written) != 1 {
             return Ok(None);
         }
 
-        let (table_id, filter, index) = self.flush_writer.write().unwrap().flush(
-            self.fptree_ptr
-                .read()
-                .unwrap()
-                .read()
-                .unwrap()
-                .get_first_leaf(),
-        )?;
-
-        Ok(Some((table_id, filter, index)))
+        let first_leaf = self
+            .fptree_ptr
+            .read()
+            .unwrap()
+            .read()
+            .unwrap()
+            .get_first_leaf();
+        Ok(Some(first_leaf))
     }
 
-    pub fn post_flush(&self) -> Result<(), std::io::Error> {
+    pub fn swith_fptree(&self) -> Result<(), std::io::Error> {
         let mut locked_fptree_id = self.fptree_id.write().unwrap();
         let mut locked_new = self.new_fptree_ptr.write().unwrap();
         match &*locked_new {

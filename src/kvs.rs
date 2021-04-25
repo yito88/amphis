@@ -1,9 +1,12 @@
 use log::trace;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 //use crate::amphis_error::CrudError;
 use crate::config::Config;
-use crate::fptree::fptree_manager::FPTreeManager;
+use crate::file_utility;
+use crate::flush_writer::FlushWriter;
+use crate::fptree_manager::FPTreeManager;
 use crate::sstable::sstable_manager::SstableManager;
 
 pub struct KVS {
@@ -11,16 +14,46 @@ pub struct KVS {
     config: Config,
     fptree_manager: Arc<FPTreeManager>,
     sstable_manager: Arc<SstableManager>,
+    flush_writer: Arc<RwLock<FlushWriter>>,
 }
 
 impl KVS {
-    pub fn new(name: &str, config: Config) -> Result<KVS, std::io::Error> {
-        // TODO: recovery (Flush all exsting FPTrees)
+    pub fn new(name: &str, config: Config) -> Result<Self, std::io::Error> {
+        let path = config.get_data_dir_path(name);
+        let mut flush_writer = FlushWriter::new(name, config.clone(), 0);
+        let sstable_manager = SstableManager::new(name, config.clone());
+        if Path::new(&path).exists() {
+            // find the next table ID
+            let mut next_table_id = 0;
+            for entry in std::fs::read_dir(path.clone())? {
+                if let Some(file_name) = entry?.path().to_str() {
+                    if let Some(table_id) = file_utility::get_table_id(file_name) {
+                        if next_table_id <= table_id {
+                            next_table_id = (table_id / 2 + 1) * 2;
+                        }
+                    }
+                }
+            }
+            // flush the exsting trees
+            flush_writer = FlushWriter::new(name, config.clone(), next_table_id);
+            for entry in std::fs::read_dir(path)? {
+                if let Some(file_name) = entry?.path().to_str() {
+                    if let Some(fptree_id) = file_utility::get_tree_id(file_name) {
+                        let (table_id, filter, index) =
+                            flush_writer.flush_with_file(name, fptree_id)?;
+                        sstable_manager.register(table_id, filter, index)?;
+                        let leaf_file = config.get_leaf_file_path(name, fptree_id);
+                        std::fs::remove_file(leaf_file)?;
+                    }
+                }
+            }
+        }
         Ok(KVS {
             name: name.to_string(),
             config: config.clone(),
             fptree_manager: Arc::new(FPTreeManager::new(name, config.clone())?),
-            sstable_manager: Arc::new(SstableManager::new(name, config.clone())),
+            sstable_manager: Arc::new(sstable_manager),
+            flush_writer: Arc::new(RwLock::new(flush_writer)),
         })
     }
 
@@ -35,9 +68,11 @@ impl KVS {
 
         // TODO: make a flush process async
         if self.fptree_manager.need_flush() {
-            if let Some((table_id, filter, index)) = self.fptree_manager.flush()? {
+            if let Some(first_leaf) = self.fptree_manager.prepare_flush()? {
+                let (table_id, filter, index) =
+                    self.flush_writer.write().unwrap().flush(first_leaf)?;
                 self.sstable_manager.register(table_id, filter, index)?;
-                self.fptree_manager.post_flush()?;
+                self.fptree_manager.swith_fptree()?;
             }
         }
 

@@ -1,5 +1,7 @@
 use bloomfilter::Bloom;
 use log::trace;
+use mockall_double::double;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::{Arc, RwLock};
@@ -7,11 +9,14 @@ use std::sync::{Arc, RwLock};
 use crate::config::Config;
 use crate::data_utility;
 use crate::fptree::leaf::Leaf;
+use crate::fptree::leaf_manager::NUM_SLOT;
 use crate::sstable::sparse_index::SparseIndex;
 
+#[double]
+use crate::fptree::leaf_manager::LeafManager;
 // TODO: parameterize
 const ITEMS_COUNT: usize = 1 << 13;
-const WRITE_BUFFER: usize = 1 << 18;
+const WRITE_BUFFER_SIZE: usize = 1 << 18;
 
 pub struct FlushWriter {
     name: String,
@@ -28,51 +33,38 @@ impl FlushWriter {
         }
     }
 
+    /// flush the current tree
     pub fn flush(
         &mut self,
         first_leaf: Arc<RwLock<Leaf>>,
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
-        let mut locked_leaves = Vec::new();
-        locked_leaves.push(first_leaf.clone());
-        loop {
-            let leaf = match locked_leaves
-                .last()
-                .unwrap()
+        let leaf_manager = first_leaf.read().unwrap().get_leaf_manager();
+        let mut id_list = VecDeque::new();
+        let mut cur_id = first_leaf.read().unwrap().get_id();
+        while cur_id != u32::MAX as usize {
+            id_list.push_back(cur_id);
+
+            cur_id = leaf_manager
                 .read()
                 .unwrap()
-                .get_next_leaf()
-            {
-                Some(next) => next,
-                None => break,
-            };
-            trace!(
-                "starting to flush a leaf to SSTable {} - {}",
-                self.table_id,
-                leaf.read().unwrap().header
-            );
-
-            locked_leaves.push(leaf);
+                .get_header(cur_id)
+                .unwrap()
+                .get_next();
         }
 
-        let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
-        let mut index = SparseIndex::new();
-        let mut offset = 0;
-        let (id, table_file) = self.create_new_table()?;
-        let mut writer = BufWriter::with_capacity(WRITE_BUFFER, &table_file);
-        for locked_leaf in locked_leaves {
-            let kv_pairs = locked_leaf.read().unwrap().get_sorted_kv_pairs()?;
-            // it is enough to sort only kv_pairs since all leaves are ordered
-            for (key, value, _) in kv_pairs {
-                writer.write(&data_utility::format_data_with_crc(&key, &value))?;
-                filter.set(&key);
-                index.insert(&key, offset);
+        self.flush_kv(leaf_manager, id_list)
+    }
 
-                offset += data_utility::get_data_size(key.len(), value.len());
-            }
-        }
-        table_file.sync_all()?;
+    /// flush all leaves in a leaf file
+    pub fn flush_with_file(
+        &mut self,
+        name: &str,
+        fptree_id: usize,
+    ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
+        let leaf_manager = LeafManager::new(name, fptree_id, &self.config)?;
+        let id_list = leaf_manager.get_leaf_id_chain();
 
-        Ok((id, filter, index))
+        self.flush_kv(Arc::new(RwLock::new(leaf_manager)), id_list)
     }
 
     fn create_new_table(&mut self) -> Result<(usize, File), std::io::Error> {
@@ -84,5 +76,49 @@ impl FlushWriter {
         self.table_id += 2;
 
         Ok((id, table_file))
+    }
+
+    fn flush_kv(
+        &mut self,
+        leaf_manager: Arc<RwLock<LeafManager>>,
+        id_list: VecDeque<usize>,
+    ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
+        let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
+        let mut index = SparseIndex::new();
+        let mut offset = 0;
+        let (id, table_file) = self.create_new_table()?;
+        let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, &table_file);
+        for id in id_list {
+            let header = leaf_manager
+                .read()
+                .unwrap()
+                .get_header(id)
+                .expect("The header doesn't exist");
+            let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(NUM_SLOT);
+            for slot in 0..NUM_SLOT {
+                if header.is_slot_set(slot) {
+                    let (data_offset, key_size, value_size) = header.get_kv_info(slot);
+                    let (key, value) = leaf_manager.read().unwrap().read_data(
+                        id,
+                        data_offset,
+                        key_size,
+                        value_size,
+                    )?;
+                    kv_pairs.push((key, value));
+                }
+            }
+            // it is enough to sort only kv_pairs since all leaves are ordered
+            kv_pairs.sort();
+            for (key, value) in kv_pairs {
+                writer.write(&data_utility::format_data_with_crc(&key, &value))?;
+                filter.set(&key);
+                index.insert(&key, offset);
+
+                offset += data_utility::get_data_size(key.len(), value.len());
+            }
+        }
+        table_file.sync_all()?;
+
+        Ok((id, filter, index))
     }
 }

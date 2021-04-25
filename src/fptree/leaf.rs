@@ -10,13 +10,12 @@ cfg_if::cfg_if! {
         use crate::fptree::leaf_manager::LeafManager;
     }
 }
-use super::leaf_manager::LeafHeader;
-use super::leaf_manager::NUM_SLOT;
+use super::leaf_manager::{LeafHeader, NUM_SLOT};
 use super::node::Node;
 
 pub struct Leaf {
     leaf_manager: Arc<RwLock<LeafManager>>,
-    pub header: LeafHeader,
+    header: LeafHeader,
     id: usize,
     next: Option<Arc<RwLock<Leaf>>>,
     is_root: bool,
@@ -121,7 +120,8 @@ impl Node for Leaf {
     fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
         let mut new_leaf = Leaf::new(self.leaf_manager.clone())?;
 
-        let mut kv_pairs = self.get_sorted_kv_pairs()?;
+        let mut kv_pairs = self.get_kv_pairs()?;
+        kv_pairs.sort();
         let new_first = kv_pairs.len() / 2;
         let split_key = kv_pairs[new_first].0.clone();
 
@@ -149,7 +149,7 @@ impl Node for Leaf {
 
 impl Leaf {
     pub fn new(leaf_manager: Arc<RwLock<LeafManager>>) -> Result<Self, std::io::Error> {
-        let (id, header) = leaf_manager.write().unwrap().get_free_leaf()?;
+        let (id, header) = leaf_manager.write().unwrap().allocate_leaf()?;
 
         Ok(Leaf {
             leaf_manager,
@@ -160,12 +160,21 @@ impl Leaf {
         })
     }
 
-    pub fn get_sorted_kv_pairs(&self) -> Result<Vec<(Vec<u8>, Vec<u8>, usize)>, std::io::Error> {
+    pub fn get_leaf_manager(&self) -> Arc<RwLock<LeafManager>> {
+        self.leaf_manager.clone()
+    }
+
+    pub fn get_id(&self) -> usize {
+        self.id
+    }
+
+    pub fn get_kv_pairs(&self) -> Result<Vec<(Vec<u8>, Vec<u8>, usize)>, std::io::Error> {
         let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>, usize)> = Vec::with_capacity(NUM_SLOT);
 
         for slot in 0..NUM_SLOT {
             if self.header.is_slot_set(slot) {
                 let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+
                 let (key, value) = self.leaf_manager.read().unwrap().read_data(
                     self.id,
                     data_offset,
@@ -175,17 +184,8 @@ impl Leaf {
                 kv_pairs.push((key, value, slot));
             }
         }
-        kv_pairs.sort();
 
         Ok(kv_pairs)
-    }
-
-    // it's a redundant method, but it can help me avoid downcast
-    pub fn get_next_leaf(&self) -> Option<Arc<RwLock<Leaf>>> {
-        match &self.next {
-            Some(arc) => Some(arc.clone()),
-            None => None,
-        }
     }
 
     fn calc_key_hash(&self, key: &Vec<u8>) -> u8 {
@@ -229,9 +229,9 @@ impl Leaf {
 
     fn reclaim(&mut self) -> Result<(), std::io::Error> {
         trace!("Reclaim a leaf: {}", self);
-        let (new_id, mut new_header) = self.leaf_manager.write().unwrap().get_free_leaf()?;
+        let (new_id, mut new_header) = self.leaf_manager.write().unwrap().allocate_leaf()?;
         let mut new_slot: usize = 0;
-        for (key, value, slot) in self.get_sorted_kv_pairs()? {
+        for (key, value, slot) in self.get_kv_pairs()? {
             let offset = new_header.get_tail_offset();
             let tail_offset = self
                 .leaf_manager
@@ -250,11 +250,15 @@ impl Leaf {
 
         new_header.set_next(self.header.get_next());
 
-        self.leaf_manager.write().unwrap().return_leaf(self.id);
         self.leaf_manager
             .read()
             .unwrap()
             .commit_header(new_id, &new_header)?;
+        self.leaf_manager
+            .read()
+            .unwrap()
+            .commit_header(self.id, &self.header)?;
+        self.leaf_manager.write().unwrap().deallocate_leaf(self.id);
         self.id = new_id;
         self.header = new_header;
 
@@ -271,12 +275,13 @@ impl std::fmt::Display for Leaf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fptree::leaf_manager::NUM_SLOT;
     const DATA_UNIT: usize = 4 * 1024;
 
     fn make_new_leaf(id: usize) -> Leaf {
         let mut mock_leaf_manager = LeafManager::default();
         mock_leaf_manager
-            .expect_get_free_leaf()
+            .expect_allocate_leaf()
             .returning(move || Ok((id, LeafHeader::new())));
         mock_leaf_manager
             .expect_commit_header()
@@ -297,9 +302,11 @@ mod tests {
         let new_leaf: Arc<RwLock<Leaf>> = Arc::new(RwLock::new(make_new_leaf(1)));
         leaf.next = Some(new_leaf.clone());
 
-        let next = leaf.get_next_leaf().unwrap();
-
-        assert!(Arc::ptr_eq(&next, &new_leaf));
+        let exists = match leaf.get_next() {
+            Some(_) => true,
+            None => false,
+        };
+        assert!(exists);
     }
 
     #[test]
@@ -433,7 +440,7 @@ mod tests {
         leaf.leaf_manager
             .write()
             .unwrap()
-            .expect_return_leaf()
+            .expect_deallocate_leaf()
             .returning(|_| ());
         leaf.leaf_manager
             .write()
@@ -473,7 +480,7 @@ mod tests {
         leaf.leaf_manager
             .write()
             .unwrap()
-            .expect_return_leaf()
+            .expect_deallocate_leaf()
             .returning(|_| ());
         leaf.leaf_manager
             .write()

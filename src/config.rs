@@ -29,7 +29,7 @@ impl Config {
     }
 
     pub fn get_leaf_file_path(&self, name: &str, id: usize) -> String {
-        format!("{}/{}-{}.amph", self.get_data_dir_path(name), "leaves", id)
+        format!("{}/leaves-{}.amph", self.get_data_dir_path(name), id)
     }
 
     pub fn get_table_file_path(&self, name: &str, id: usize) -> String {

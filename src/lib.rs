@@ -5,4 +5,5 @@ mod data_utility;
 mod file_utility;
 mod flush_writer;
 mod fptree;
+mod fptree_manager;
 mod sstable;

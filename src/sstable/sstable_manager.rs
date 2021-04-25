@@ -118,7 +118,7 @@ impl SstableManager {
 
     fn write_filter(&self, table_id: usize, filter: &Bloom<Vec<u8>>) -> Result<(), std::io::Error> {
         let file_path = self.config.get_filter_file_path(&self.name);
-        let file = file_utility::open_file(&file_path)?;
+        let (file, _) = file_utility::open_file(&file_path)?;
         let mut writer = BufWriter::new(&file);
 
         let mut encoded: Vec<u8> = Vec::new();
@@ -144,7 +144,7 @@ impl SstableManager {
 
     fn write_index(&self, table_id: usize, index: &SparseIndex) -> Result<(), std::io::Error> {
         let file_path = self.config.get_index_file_path(&self.name);
-        let file = file_utility::open_file(&file_path)?;
+        let (file, _) = file_utility::open_file(&file_path)?;
         let mut writer = BufWriter::new(&file);
 
         let mut encoded: Vec<u8> = Vec::new();

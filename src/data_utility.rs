@@ -73,7 +73,15 @@ pub fn check_crc(data: &[u8], crc: u32) -> Result<(), std::io::Error> {
 pub fn check_slot_crc(bytes: &[u8]) -> Result<(), std::io::Error> {
     let len = bytes.len();
     let size = u32::from_le_bytes(bytes[0..LEN_SIZE].try_into().unwrap());
-    let crc = u32::from_le_bytes(bytes[(len - LEN_CRC)..len].try_into().unwrap());
+    let crc = u32::from_le_bytes(bytes[(len - LEN_CRC)..].try_into().unwrap());
 
     check_crc(&bytes[LEN_SIZE..(LEN_SIZE + size as usize)], crc)
+}
+
+pub fn check_header_crc(bytes: &[u8]) -> Result<(), std::io::Error> {
+    let len = bytes.len();
+    let (data, crc_buf) = bytes.split_at(len - LEN_CRC);
+    let crc = u32::from_le_bytes(crc_buf.try_into().unwrap());
+
+    check_crc(data, crc)
 }

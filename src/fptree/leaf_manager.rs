@@ -1,8 +1,10 @@
 use log::{trace, warn};
 use memmap::{MmapMut, MmapOptions};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::fs::{File, OpenOptions};
+use std::convert::TryInto;
+use std::fs::File;
 use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
 
@@ -21,12 +23,15 @@ const RECLAMATION_THRESHOLD: usize = LEAF_SIZE / 2;
 const RECLAMATION_RATE: f32 = 0.5;
 
 // for header format
+const HEADER_MAGIC: u32 = 0x1234;
+const LEN_HEADER_MAGIC: usize = 4;
 const LEN_BITMAP: usize = NUM_SLOT / 8;
 const LEN_NEXT: usize = 4;
 const LEN_TAIL_OFFSET: usize = 4;
 const LEN_FINGERPRINTS: usize = NUM_SLOT;
 const LEN_KV_INFO: usize = NUM_SLOT * std::mem::size_of::<KVInfo>();
-const LEAF_HEADER_SIZE: usize = LEN_BITMAP
+pub const LEAF_HEADER_SIZE: usize = LEN_HEADER_MAGIC
+    + LEN_BITMAP
     + LEN_NEXT
     + LEN_TAIL_OFFSET
     + LEN_FINGERPRINTS
@@ -36,11 +41,12 @@ const LEAF_HEADER_SIZE: usize = LEN_BITMAP
 pub struct LeafManager {
     leaves_file: File,
     free_leaves: VecDeque<usize>,
-    header_mmap: Vec<Arc<RwLock<MmapMut>>>,
+    header_mmap: HashMap<usize, Arc<RwLock<MmapMut>>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct LeafHeader {
+    magic: u32,
     bitmap: [u8; NUM_SLOT / 8],
     next: u32,
     tail_offset: u32,
@@ -65,32 +71,37 @@ impl LeafManager {
         }
 
         let file_path = config.get_leaf_file_path(name, id);
-        let file = file_utility::open_file(&file_path)?;
-
-        // TODO: recovery
-        Ok(LeafManager {
+        let (file, is_created) = file_utility::open_file(&file_path)?;
+        let mut manager = LeafManager {
             leaves_file: file,
             free_leaves: VecDeque::new(),
-            header_mmap: Vec::new(),
-        })
+            header_mmap: HashMap::new(),
+        };
+
+        if !is_created {
+            manager.recover_state()?;
+        }
+
+        Ok(manager)
     }
 
-    pub fn get_free_leaf(&mut self) -> Result<(usize, LeafHeader), std::io::Error> {
+    pub fn allocate_leaf(&mut self) -> Result<(usize, LeafHeader), std::io::Error> {
         if self.free_leaves.is_empty() {
             self.allocate_new_leaves()?;
         }
 
         let new_id = self.free_leaves.pop_front().unwrap();
         self.header_mmap
-            .push(Arc::new(RwLock::new(self.mmap_header(new_id)?)));
+            .insert(new_id, Arc::new(RwLock::new(self.mmap_header(new_id)?)));
 
         trace!("New leaf is allocated: {}", new_id);
         Ok((new_id, LeafHeader::new()))
     }
 
-    pub fn return_leaf(&mut self, id: usize) {
+    pub fn deallocate_leaf(&mut self, id: usize) {
         trace!("Leaf {} is deallocated", id);
         self.free_leaves.push_back(id);
+        self.header_mmap.remove(&id);
     }
 
     fn allocate_new_leaves(&mut self) -> Result<(), std::io::Error> {
@@ -109,7 +120,7 @@ impl LeafManager {
         Ok(())
     }
 
-    fn mmap_header(&self, id: usize) -> Result<MmapMut, std::io::Error> {
+    pub fn mmap_header(&self, id: usize) -> Result<MmapMut, std::io::Error> {
         // TODO: protect the header when write failure (tail header)
         let offset = id * LEAF_SIZE;
         let mmap = unsafe {
@@ -122,8 +133,19 @@ impl LeafManager {
         Ok(mmap)
     }
 
+    pub fn get_header(&self, id: usize) -> Option<LeafHeader> {
+        match self.header_mmap.get(&id) {
+            Some(mmap) => {
+                let header: LeafHeader =
+                    bincode::deserialize(mmap.read().unwrap().as_ref()).unwrap();
+                Some(header)
+            }
+            None => None,
+        }
+    }
+
     pub fn commit_header(&self, id: usize, header: &LeafHeader) -> Result<(), std::io::Error> {
-        let mut mmap = self.header_mmap[id].write().unwrap();
+        let mut mmap = self.header_mmap.get(&id).unwrap().write().unwrap();
         let mut encoded: Vec<u8> = match bincode::serialize(header) {
             Ok(b) => b,
             // TODO: replace with an amphis error
@@ -194,11 +216,82 @@ impl LeafManager {
         let aligned_tail = offset + data_utility::round_up_size(data_size);
         Ok(aligned_tail)
     }
+
+    pub fn get_leaf_id_chain(&self) -> VecDeque<usize> {
+        let mut leaf_id_chain = VecDeque::new();
+        let mut backoff_prev = HashMap::new();
+        let mut backoff_next = HashMap::new();
+        for (id, mmap) in &self.header_mmap {
+            let header: LeafHeader = bincode::deserialize(mmap.read().unwrap().as_ref()).unwrap();
+            let next = header.get_next();
+            if leaf_id_chain.is_empty() {
+                leaf_id_chain.push_back(*id);
+                leaf_id_chain.push_back(next);
+                continue;
+            }
+
+            let cur_front = *leaf_id_chain.front().unwrap();
+            let cur_back = *leaf_id_chain.back().unwrap();
+            if cur_back == *id {
+                leaf_id_chain.push_back(next);
+            } else if cur_front == next {
+                leaf_id_chain.push_front(*id);
+            } else {
+                backoff_prev.insert(next, *id);
+                backoff_next.insert(*id, next);
+            }
+
+            // check backoff maps
+            while !backoff_next.is_empty() {
+                let cur_front = *leaf_id_chain.front().unwrap();
+                let cur_back = *leaf_id_chain.back().unwrap();
+                if let Some(p) = backoff_prev.remove(&cur_front) {
+                    leaf_id_chain.push_front(p);
+                    backoff_next.remove(&p);
+                } else if let Some(n) = backoff_next.remove(&cur_back) {
+                    leaf_id_chain.push_back(n);
+                    backoff_prev.remove(&n);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        leaf_id_chain
+    }
+
+    fn recover_state(&mut self) -> Result<(), std::io::Error> {
+        let file_size = self.leaves_file.metadata()?.len() as usize;
+        for id in 0..(file_size / LEAF_SIZE) {
+            let mmap = self.mmap_header(id)?;
+
+            // validate the header
+            let magic = u32::from_le_bytes(mmap[0..LEN_HEADER_MAGIC].try_into().unwrap());
+            if magic != HEADER_MAGIC {
+                self.free_leaves.push_back(id);
+                continue;
+            }
+
+            match data_utility::check_header_crc(&mmap) {
+                Ok(_) => {
+                    self.header_mmap.insert(id, Arc::new(RwLock::new(mmap)));
+                }
+                Err(_) => {
+                    // TODO: check another header field
+                    warn!("header's CRC check failed");
+                    self.free_leaves.push_back(id);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl LeafHeader {
     pub fn new() -> Self {
         LeafHeader {
+            magic: HEADER_MAGIC,
             bitmap: [0u8; NUM_SLOT / 8],
             next: u32::MAX,
             fingerprints: [0u8; NUM_SLOT],
@@ -356,6 +449,7 @@ mod tests {
 
     fn make_header() -> LeafHeader {
         LeafHeader {
+            magic: HEADER_MAGIC,
             bitmap: [0u8; NUM_SLOT / 8],
             next: 0u32,
             fingerprints: [0u8; NUM_SLOT],

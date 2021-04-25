@@ -15,7 +15,9 @@ fn main() {
 
     //seq_insert(num_elements);
 
-    concurrent_insert(num_elements, num_threads);
+    //concurrent_insert(num_elements, num_threads);
+
+    mutations(num_elements);
 }
 
 fn seq_insert(num_elements: usize) {
@@ -98,4 +100,49 @@ fn concurrent_insert(num_elements: usize, num_threads: usize) {
     }
 
     assert_eq!(rx.iter().take(num_threads).all(|r| r == 0), true);
+}
+
+fn mutations(num_elements: usize) {
+    let config = amphis::config::Config::new();
+    let kvs = amphis::kvs::KVS::new("test", config).unwrap();
+
+    // INSERT
+    for i in 0..num_elements {
+        let key = ("k".to_string() + &i.to_string()).as_bytes().to_vec();
+        let value = ("v".to_string() + &i.to_string()).as_bytes().to_vec();
+        kvs.put(&key, &value).unwrap();
+    }
+
+    // UPDATE or DELETE
+    for i in 0..num_elements {
+        if i % 2 != 0 && i % 3 != 0 {
+            continue;
+        }
+
+        let key = ("k".to_string() + &i.to_string()).as_bytes().to_vec();
+        if i % 3 == 0 {
+            kvs.delete(&key).unwrap();
+        } else {
+            let value = ("new-v".to_string() + &i.to_string()).as_bytes().to_vec();
+            kvs.put(&key, &value).unwrap();
+        }
+    }
+
+    // CHECK
+    for i in 0..num_elements {
+        let key = ("k".to_string() + &i.to_string()).as_bytes().to_vec();
+        let expected = if i % 2 == 0 {
+            ("new-v".to_string() + &i.to_string()).as_bytes().to_vec()
+        } else {
+            ("v".to_string() + &i.to_string()).as_bytes().to_vec()
+        };
+
+        let actual = kvs.get(&key).unwrap();
+
+        if i % 3 == 0 {
+            assert_eq!(actual, None);
+        } else {
+            assert_eq!(actual.unwrap(), expected);
+        }
+    }
 }
