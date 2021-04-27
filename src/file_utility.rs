@@ -1,6 +1,7 @@
 use log::warn;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
+use std::path::Path;
 
 pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
     let mut is_created = false;
@@ -26,30 +27,23 @@ pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
     Ok((file, is_created))
 }
 
-pub fn get_table_id(file_name: &str) -> Option<usize> {
-    if file_name.starts_with("sstable-") {
-        if let Some(suffix) = file_name.strip_prefix("sstable-") {
-            if let Some(id_str) = suffix.strip_suffix(".amph") {
-                match id_str.parse::<usize>() {
-                    Ok(id) => return Some(id),
-                    Err(_) => return None,
-                }
-            }
-        }
-    }
-    None
+pub fn get_table_id(path: &Path) -> Option<usize> {
+    get_id(path, "sstable-")
 }
 
-pub fn get_tree_id(file_name: &str) -> Option<usize> {
-    if file_name.starts_with("leaves-") {
-        if let Some(suffix) = file_name.strip_prefix("leaves-") {
-            if let Some(id_str) = suffix.strip_suffix(".amph") {
-                match id_str.parse::<usize>() {
-                    Ok(id) => return Some(id),
-                    Err(_) => return None,
-                }
-            }
-        }
+pub fn get_tree_id(path: &Path) -> Option<usize> {
+    get_id(path, "leaves-")
+}
+
+fn get_id(path: &Path, prefix: &str) -> Option<usize> {
+    match path.file_stem().expect("cannot get the file name").to_str() {
+        Some(file) if file.starts_with(prefix) => match file.strip_prefix(prefix) {
+            Some(id_str) => match id_str.parse::<usize>() {
+                Ok(id) => return Some(id),
+                Err(_) => return None,
+            },
+            None => None,
+        },
+        _ => None,
     }
-    None
 }

@@ -1,4 +1,4 @@
-use log::{trace, warn};
+use log::{debug, trace, warn};
 use memmap::{MmapMut, MmapOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -79,6 +79,7 @@ impl LeafManager {
         };
 
         if !is_created {
+            debug!("recovering headers for FPTree {}", id);
             manager.recover_state()?;
         }
 
@@ -223,6 +224,10 @@ impl LeafManager {
         let mut backoff_next = HashMap::new();
         for (id, mmap) in &self.header_mmap {
             let header: LeafHeader = bincode::deserialize(mmap.read().unwrap().as_ref()).unwrap();
+            if header.is_invalid() {
+                continue;
+            }
+
             let next = header.get_next();
             if leaf_id_chain.is_empty() {
                 leaf_id_chain.push_back(*id);
@@ -256,6 +261,8 @@ impl LeafManager {
                 }
             }
         }
+        trace!("backoff_prev {:?}", backoff_prev);
+        trace!("backoff_next {:?}", backoff_next);
 
         leaf_id_chain
     }
@@ -396,6 +403,24 @@ impl LeafHeader {
         value_size: usize,
     ) {
         self.kv_info[slot].set(data_offset, key_size, value_size);
+    }
+
+    pub fn invalidate(&mut self) {
+        // invalid next
+        self.set_next(u32::MAX as _);
+        // unset all slots
+        for b in self.bitmap.iter_mut() {
+            *b = 0;
+        }
+    }
+
+    pub fn is_invalid(&self) -> bool {
+        for b in self.bitmap.iter() {
+            if *b != 0 {
+                return false;
+            };
+        }
+        true
     }
 }
 

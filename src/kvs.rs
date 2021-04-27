@@ -1,4 +1,4 @@
-use log::trace;
+use log::{debug, trace};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -26,25 +26,23 @@ impl KVS {
             // find the next table ID
             let mut next_table_id = 0;
             for entry in std::fs::read_dir(path.clone())? {
-                if let Some(file_name) = entry?.path().to_str() {
-                    if let Some(table_id) = file_utility::get_table_id(file_name) {
-                        if next_table_id <= table_id {
-                            next_table_id = (table_id / 2 + 1) * 2;
-                        }
+                if let Some(table_id) = file_utility::get_table_id(&entry?.path()) {
+                    if next_table_id <= table_id {
+                        next_table_id = (table_id / 2 + 1) * 2;
                     }
                 }
             }
+            debug!("next table ID: {}", next_table_id);
             // flush the exsting trees
             flush_writer = FlushWriter::new(name, config.clone(), next_table_id);
             for entry in std::fs::read_dir(path)? {
-                if let Some(file_name) = entry?.path().to_str() {
-                    if let Some(fptree_id) = file_utility::get_tree_id(file_name) {
-                        let (table_id, filter, index) =
-                            flush_writer.flush_with_file(name, fptree_id)?;
-                        sstable_manager.register(table_id, filter, index)?;
-                        let leaf_file = config.get_leaf_file_path(name, fptree_id);
-                        std::fs::remove_file(leaf_file)?;
-                    }
+                if let Some(fptree_id) = file_utility::get_tree_id(&entry?.path()) {
+                    trace!("found FPTree ID: {}", fptree_id);
+                    let (table_id, filter, index) =
+                        flush_writer.flush_with_file(name, fptree_id)?;
+                    sstable_manager.register(table_id, filter, index)?;
+                    let leaf_file = config.get_leaf_file_path(name, fptree_id);
+                    std::fs::remove_file(leaf_file)?;
                 }
             }
         }

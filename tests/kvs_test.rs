@@ -52,5 +52,42 @@ fn test_mutations() {
         }
     }
 
-    std::fs::remove_dir_all("tests/test_data").unwrap();
+    let _ret = std::fs::remove_dir_all("tests/test_data");
+}
+
+#[test]
+fn test_recovery() {
+    let _ = env_logger::builder().is_test(true).try_init();
+    const NUM_INSERTION: usize = 129;
+    const TABLE_NAME: &str = "test";
+    let conf = "data_dir = 'tests/test_data'\nbloom_filter_size = 32768";
+    let config = Config::new_with_str(conf);
+    let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
+
+    // INSERT
+    for i in 0..NUM_INSERTION {
+        let key = "k".to_string() + &i.to_string();
+        let value = "v".to_string() + &i.to_string();
+        kvs.put(&key.as_bytes().to_vec(), &value.as_bytes().to_vec())
+            .unwrap();
+    }
+
+    // RESTART
+    drop(kvs);
+    let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
+
+    // CHECK
+    for i in 0..NUM_INSERTION {
+        let key = format!("{}{}", "k", (&*i.to_string()));
+        let expected = format!("{}{}", "v", (&*i.to_string())).as_bytes().to_vec();
+
+        let actual = kvs
+            .get(&key.as_bytes().to_vec())
+            .expect("read failed")
+            .expect("no value");
+
+        assert_eq!(actual, expected);
+    }
+
+    let _ret = std::fs::remove_dir_all("tests/test_data");
 }

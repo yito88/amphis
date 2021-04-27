@@ -68,6 +68,11 @@ impl Node for Leaf {
             let split_key = self.split()?;
             let new_leaf = self.get_next().unwrap();
             if split_key < *key {
+                self.leaf_manager
+                    .read()
+                    .unwrap()
+                    .commit_header(self.id, &self.header)?;
+
                 // TODO: when the new leaf is split
                 new_leaf.write().unwrap().insert(key, value)?;
                 return Ok(Some(split_key));
@@ -249,15 +254,17 @@ impl Leaf {
         }
 
         new_header.set_next(self.header.get_next());
-
         self.leaf_manager
             .read()
             .unwrap()
             .commit_header(new_id, &new_header)?;
+
+        self.header.invalidate();
         self.leaf_manager
             .read()
             .unwrap()
             .commit_header(self.id, &self.header)?;
+
         self.leaf_manager.write().unwrap().deallocate_leaf(self.id);
         self.id = new_id;
         self.header = new_header;
@@ -275,7 +282,6 @@ impl std::fmt::Display for Leaf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fptree::leaf_manager::NUM_SLOT;
     const DATA_UNIT: usize = 4 * 1024;
 
     fn make_new_leaf(id: usize) -> Leaf {

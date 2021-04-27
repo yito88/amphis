@@ -1,5 +1,5 @@
 use bloomfilter::Bloom;
-use log::trace;
+use log::{debug, trace};
 use mockall_double::double;
 use std::collections::VecDeque;
 use std::fs::File;
@@ -63,6 +63,7 @@ impl FlushWriter {
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
         let leaf_manager = LeafManager::new(name, fptree_id, &self.config)?;
         let id_list = leaf_manager.get_leaf_id_chain();
+        debug!("leaf ID list: {:?}", id_list);
 
         self.flush_kv(Arc::new(RwLock::new(leaf_manager)), id_list)
     }
@@ -86,9 +87,13 @@ impl FlushWriter {
         let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
         let mut index = SparseIndex::new();
         let mut offset = 0;
-        let (id, table_file) = self.create_new_table()?;
+        let (table_id, table_file) = self.create_new_table()?;
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, &table_file);
         for id in id_list {
+            if id == u32::MAX as _ {
+                break;
+            }
+            trace!("flushing leaf {:?}", id);
             let header = leaf_manager
                 .read()
                 .unwrap()
@@ -119,6 +124,6 @@ impl FlushWriter {
         }
         table_file.sync_all()?;
 
-        Ok((id, filter, index))
+        Ok((table_id, filter, index))
     }
 }
