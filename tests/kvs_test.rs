@@ -7,8 +7,8 @@ use env_logger;
 fn test_mutations() {
     let _ = env_logger::builder().is_test(true).try_init();
     const NUM_INSERTION: usize = 1025;
-    const TABLE_NAME: &str = "test";
-    let conf = "data_dir = 'tests/test_data'\nbloom_filter_size = 32768";
+    const TABLE_NAME: &str = "mutation_test";
+    let conf = "data_dir = 'tests'\nbloom_filter_size = 32768";
     let config = Config::new_with_str(conf);
     let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
 
@@ -52,15 +52,15 @@ fn test_mutations() {
         }
     }
 
-    let _ret = std::fs::remove_dir_all("tests/test_data");
+    let _ = std::fs::remove_dir_all(format!("tests/{}", TABLE_NAME));
 }
 
 #[test]
 fn test_recovery() {
     let _ = env_logger::builder().is_test(true).try_init();
-    const NUM_INSERTION: usize = 129;
-    const TABLE_NAME: &str = "test";
-    let conf = "data_dir = 'tests/test_data'\nbloom_filter_size = 32768";
+    const NUM_INSERTION: usize = 1025;
+    const TABLE_NAME: &str = "recovery_test";
+    let conf = "data_dir = 'tests'\nbloom_filter_size = 32768";
     let config = Config::new_with_str(conf);
     let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
 
@@ -89,5 +89,5 @@ fn test_recovery() {
         assert_eq!(actual, expected);
     }
 
-    let _ret = std::fs::remove_dir_all("tests/test_data");
+    let _ = std::fs::remove_dir_all(format!("tests/{}", TABLE_NAME));
 }

@@ -26,14 +26,13 @@ pub struct FPTree {
 impl FPTree {
     pub fn new(name: &str, id: usize, config: &Config) -> Result<Self, std::io::Error> {
         let leaf_manager = Arc::new(RwLock::new(LeafManager::new(name, id, config)?));
-        // TODO: recovery
         let first_leaf = Arc::new(RwLock::new(Leaf::new(leaf_manager).unwrap()));
         first_leaf.write().unwrap().set_root(true);
 
         Ok(FPTree {
             root_ptr: Arc::new(RwLock::new(first_leaf.clone())),
             mutex: Arc::new(Mutex::new(0)),
-            first_leaf: first_leaf,
+            first_leaf,
             root_split_count: Arc::new(Mutex::new(0)),
         })
     }

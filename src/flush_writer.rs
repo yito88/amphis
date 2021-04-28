@@ -1,7 +1,6 @@
 use bloomfilter::Bloom;
 use log::{debug, trace};
 use mockall_double::double;
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::{Arc, RwLock};
@@ -39,17 +38,19 @@ impl FlushWriter {
         first_leaf: Arc<RwLock<Leaf>>,
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
         let leaf_manager = first_leaf.read().unwrap().get_leaf_manager();
-        let mut id_list = VecDeque::new();
-        let mut cur_id = first_leaf.read().unwrap().get_id();
-        while cur_id != u32::MAX as usize {
-            id_list.push_back(cur_id);
-
-            cur_id = leaf_manager
+        let mut id_list = Vec::new();
+        let mut header = leaf_manager
+            .read()
+            .unwrap()
+            .get_header(0)
+            .expect("the first header doesn't exist");
+        while let Some(next) = header.get_next() {
+            id_list.push(next);
+            header = leaf_manager
                 .read()
                 .unwrap()
-                .get_header(cur_id)
-                .unwrap()
-                .get_next();
+                .get_header(next)
+                .expect("the next header doesn't exist");
         }
 
         self.flush_kv(leaf_manager, id_list)
@@ -82,7 +83,7 @@ impl FlushWriter {
     fn flush_kv(
         &mut self,
         leaf_manager: Arc<RwLock<LeafManager>>,
-        id_list: VecDeque<usize>,
+        id_list: Vec<usize>,
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
         let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
         let mut index = SparseIndex::new();
@@ -90,10 +91,6 @@ impl FlushWriter {
         let (table_id, table_file) = self.create_new_table()?;
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, &table_file);
         for id in id_list {
-            if id == u32::MAX as _ {
-                break;
-            }
-            trace!("flushing leaf {:?}", id);
             let header = leaf_manager
                 .read()
                 .unwrap()

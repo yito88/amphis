@@ -18,12 +18,11 @@ use mockall::automock;
 // TODO: parameterize them
 pub const NUM_SLOT: usize = 32;
 const NUM_ALLOCATION: usize = 16;
-const LEAF_SIZE: usize = 256 * 1024;
-const RECLAMATION_THRESHOLD: usize = LEAF_SIZE / 2;
-const RECLAMATION_RATE: f32 = 0.5;
+const LEAF_SIZE: usize = 1024 * 1024;
 
 // for header format
 const HEADER_MAGIC: u32 = 0x1234;
+const INVALID_NEXT_ID: u32 = u32::MAX;
 const LEN_HEADER_MAGIC: usize = 4;
 const LEN_BITMAP: usize = NUM_SLOT / 8;
 const LEN_NEXT: usize = 4;
@@ -97,12 +96,6 @@ impl LeafManager {
 
         trace!("New leaf is allocated: {}", new_id);
         Ok((new_id, LeafHeader::new()))
-    }
-
-    pub fn deallocate_leaf(&mut self, id: usize) {
-        trace!("Leaf {} is deallocated", id);
-        self.free_leaves.push_back(id);
-        self.header_mmap.remove(&id);
     }
 
     fn allocate_new_leaves(&mut self) -> Result<(), std::io::Error> {
@@ -218,51 +211,23 @@ impl LeafManager {
         Ok(aligned_tail)
     }
 
-    pub fn get_leaf_id_chain(&self) -> VecDeque<usize> {
-        let mut leaf_id_chain = VecDeque::new();
-        let mut backoff_prev = HashMap::new();
-        let mut backoff_next = HashMap::new();
-        for (id, mmap) in &self.header_mmap {
-            let header: LeafHeader = bincode::deserialize(mmap.read().unwrap().as_ref()).unwrap();
-            if header.is_invalid() {
-                continue;
-            }
-
-            let next = header.get_next();
-            if leaf_id_chain.is_empty() {
-                leaf_id_chain.push_back(*id);
-                leaf_id_chain.push_back(next);
-                continue;
-            }
-
-            let cur_front = *leaf_id_chain.front().unwrap();
-            let cur_back = *leaf_id_chain.back().unwrap();
-            if cur_back == *id {
-                leaf_id_chain.push_back(next);
-            } else if cur_front == next {
-                leaf_id_chain.push_front(*id);
-            } else {
-                backoff_prev.insert(next, *id);
-                backoff_next.insert(*id, next);
-            }
-
-            // check backoff maps
-            while !backoff_next.is_empty() {
-                let cur_front = *leaf_id_chain.front().unwrap();
-                let cur_back = *leaf_id_chain.back().unwrap();
-                if let Some(p) = backoff_prev.remove(&cur_front) {
-                    leaf_id_chain.push_front(p);
-                    backoff_next.remove(&p);
-                } else if let Some(n) = backoff_next.remove(&cur_back) {
-                    leaf_id_chain.push_back(n);
-                    backoff_prev.remove(&n);
-                } else {
-                    break;
-                }
-            }
+    pub fn get_leaf_id_chain(&self) -> Vec<usize> {
+        let mut leaf_id_chain = Vec::new();
+        let first_mmap = self
+            .header_mmap
+            .get(&0)
+            .expect("no header for the first leaf");
+        let mut header: LeafHeader =
+            bincode::deserialize(first_mmap.read().unwrap().as_ref()).unwrap();
+        leaf_id_chain.push(0);
+        while let Some(next) = header.get_next() {
+            leaf_id_chain.push(next);
+            let next_mmap = self
+                .header_mmap
+                .get(&next)
+                .expect("no header for the first leaf");
+            header = bincode::deserialize(next_mmap.read().unwrap().as_ref()).unwrap();
         }
-        trace!("backoff_prev {:?}", backoff_prev);
-        trace!("backoff_next {:?}", backoff_next);
 
         leaf_id_chain
     }
@@ -300,7 +265,7 @@ impl LeafHeader {
         LeafHeader {
             magic: HEADER_MAGIC,
             bitmap: [0u8; NUM_SLOT / 8],
-            next: u32::MAX,
+            next: INVALID_NEXT_ID,
             fingerprints: [0u8; NUM_SLOT],
             kv_info: [KVInfo::new(); NUM_SLOT],
             tail_offset: data_utility::DATA_ALIGNMENT as u32,
@@ -312,23 +277,6 @@ impl LeafHeader {
         let is_slot_full = self.bitmap.iter().all(|&x| x == 0xFF);
 
         no_space || is_slot_full
-    }
-
-    pub fn need_reclamation(&self) -> bool {
-        if (self.tail_offset as usize) < RECLAMATION_THRESHOLD {
-            return false;
-        }
-
-        let mut valid_size = 0;
-        for slot in 0..NUM_SLOT {
-            if self.is_slot_set(slot) {
-                let (_, key_size, value_size) = self.kv_info[slot].get();
-                valid_size +=
-                    data_utility::round_up_size(data_utility::get_data_size(key_size, value_size));
-            }
-        }
-
-        valid_size < (self.tail_offset as f32 * RECLAMATION_RATE) as usize
     }
 
     pub fn get_empty_slot(&self) -> Option<usize> {
@@ -367,8 +315,12 @@ impl LeafHeader {
         self.bitmap[idx] &= 0xFF ^ (1 << offset);
     }
 
-    pub fn get_next(&self) -> usize {
-        self.next as usize
+    pub fn get_next(&self) -> Option<usize> {
+        if self.next == INVALID_NEXT_ID {
+            None
+        } else {
+            Some(self.next as _)
+        }
     }
 
     pub fn set_next(&mut self, next_id: usize) {
@@ -403,24 +355,6 @@ impl LeafHeader {
         value_size: usize,
     ) {
         self.kv_info[slot].set(data_offset, key_size, value_size);
-    }
-
-    pub fn invalidate(&mut self) {
-        // invalid next
-        self.set_next(u32::MAX as _);
-        // unset all slots
-        for b in self.bitmap.iter_mut() {
-            *b = 0;
-        }
-    }
-
-    pub fn is_invalid(&self) -> bool {
-        for b in self.bitmap.iter() {
-            if *b != 0 {
-                return false;
-            };
-        }
-        true
     }
 }
 
@@ -496,26 +430,6 @@ mod tests {
             header.set_slot(i);
         }
         assert!(header.need_split(0));
-    }
-
-    #[test]
-    fn test_need_reclamation() {
-        let mut header = make_header();
-        assert!(!header.need_reclamation());
-
-        let mut offset = 0;
-        let key_size = 2 * 1024;
-        let value_size = 4 * 1024;
-        for i in 0..32 {
-            offset += data_utility::get_data_size(key_size, value_size);
-            if i % 3 == 0 {
-                header.set_slot(i);
-            }
-            header.set_kv_info(i, offset, key_size, value_size);
-        }
-        header.set_tail_offset(offset);
-
-        assert!(header.need_reclamation());
     }
 
     #[test]
