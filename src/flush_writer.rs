@@ -38,20 +38,8 @@ impl FlushWriter {
         first_leaf: Arc<RwLock<Leaf>>,
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
         let leaf_manager = first_leaf.read().unwrap().get_leaf_manager();
-        let mut id_list = Vec::new();
-        let mut header = leaf_manager
-            .read()
-            .unwrap()
-            .get_header(0)
-            .expect("the first header doesn't exist");
-        while let Some(next) = header.get_next() {
-            id_list.push(next);
-            header = leaf_manager
-                .read()
-                .unwrap()
-                .get_header(next)
-                .expect("the next header doesn't exist");
-        }
+        let id_list = leaf_manager.read().unwrap().get_leaf_id_chain();
+        debug!("leaf ID list: {:?}", id_list);
 
         self.flush_kv(leaf_manager, id_list)
     }

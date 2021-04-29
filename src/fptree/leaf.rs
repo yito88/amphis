@@ -63,16 +63,15 @@ impl Node for Leaf {
         let data_size = key.len() + value.len();
         if self.header.need_split(data_size) {
             let split_key = self.split()?;
-            let new_leaf = self.get_next().unwrap();
+            let new_leaf = self.get_next().expect("no next leaf");
             if split_key < *key {
-                self.leaf_manager
-                    .read()
-                    .unwrap()
-                    .commit_header(self.id, &self.header)?;
+                self.commit()?;
 
                 // TODO: when the new leaf is split
                 new_leaf.write().unwrap().insert(key, value)?;
                 return Ok(Some(split_key));
+            } else {
+                new_leaf.read().unwrap().commit()?;
             }
 
             ret = Some(split_key);
@@ -91,10 +90,7 @@ impl Node for Leaf {
             self.header.set_fingerprint(slot, self.calc_key_hash(key));
             self.header
                 .set_kv_info(slot, offset, key.len(), value.len());
-            self.leaf_manager
-                .read()
-                .unwrap()
-                .commit_header(self.id, &self.header)?;
+            self.commit()?;
         }
 
         trace!("Leaf: {}, key {:?}", self, key);
@@ -148,6 +144,13 @@ impl Node for Leaf {
         trace!("split_key: {:?}", split_key.clone());
 
         Ok(split_key)
+    }
+
+    fn commit(&self) -> Result<(), std::io::Error> {
+        self.leaf_manager
+            .read()
+            .unwrap()
+            .commit_header(self.id, &self.header)
     }
 }
 

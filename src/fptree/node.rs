@@ -12,4 +12,5 @@ pub trait Node {
         -> Result<Option<Vec<u8>>, std::io::Error>;
     fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error>;
     fn split(&mut self) -> Result<Vec<u8>, std::io::Error>;
+    fn commit(&self) -> Result<(), std::io::Error>;
 }

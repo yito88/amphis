@@ -114,6 +114,11 @@ impl Node for Inner {
 
         Ok(split_key)
     }
+
+    fn commit(&self) -> Result<(), std::io::Error> {
+        // nothing to do for the inner
+        Ok(())
+    }
 }
 
 impl Inner {
@@ -180,6 +185,9 @@ mod tests {
         }
         fn split(&mut self) -> Result<Vec<u8>, std::io::Error> {
             Ok(Vec::new())
+        }
+        fn commit(&self) -> Result<(), std::io::Error> {
+            Ok(())
         }
     }
 
