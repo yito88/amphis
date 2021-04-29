@@ -85,10 +85,10 @@ impl FlushWriter {
         leaf_manager: Arc<RwLock<LeafManager>>,
         id_list: Vec<usize>,
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
-        let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
-        let mut index = SparseIndex::new();
         let mut offset = 0;
         let (table_id, table_file) = self.create_new_table()?;
+        let mut index = SparseIndex::new(table_id);
+        let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, &table_file);
         for id in id_list {
             let header = leaf_manager

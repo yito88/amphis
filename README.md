@@ -27,4 +27,4 @@ An embedded key-value store
   - [x] SSTable file
   - [x] Bloom filter/Sparse index
   - [ ] Compaction
-  - [ ] Recovery
+  - [x] Recovery

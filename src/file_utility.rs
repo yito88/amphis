@@ -14,9 +14,9 @@ pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
         Ok(f) => f,
         Err(e) => match e.kind() {
             ErrorKind::NotFound => {
-                warn!("a new index file is created");
                 let f = File::create(&file_path)?;
                 f.sync_all()?;
+                warn!("a new file {} is created", file_path);
                 is_created = true;
                 f
             }

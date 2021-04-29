@@ -1,10 +1,12 @@
 use bloomfilter::Bloom;
-use log::trace;
+use log::{debug, trace};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::ErrorKind;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::io::{BufWriter, Write};
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use super::sparse_index::SparseIndex;
@@ -21,15 +23,44 @@ pub struct SstableManager {
     indexes: Arc<RwLock<BTreeMap<usize, SparseIndex>>>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct BloomElements {
+    table_id: usize,
+    bitmap_bits: u64,
+    k_num: u32,
+    sip_keys: [(u64, u64); 2],
+    bitmap: Vec<u8>,
+}
+
 impl SstableManager {
-    pub fn new(name: &str, config: Config) -> Self {
-        // TODO: recovery
-        SstableManager {
+    pub fn new(name: &str, config: Config) -> Result<(Self, usize), std::io::Error> {
+        let path = config.get_data_dir_path(name);
+        let manager = SstableManager {
             name: name.to_string(),
             config,
             filters: Arc::new(RwLock::new(BTreeMap::new())),
             indexes: Arc::new(RwLock::new(BTreeMap::new())),
+        };
+
+        // recovery the current state
+        let mut next_table_id = 0;
+        if Path::new(&path).exists() {
+            // find the next table ID
+            for entry in std::fs::read_dir(path.clone())? {
+                if let Some(table_id) = file_utility::get_table_id(&entry?.path()) {
+                    if next_table_id <= table_id {
+                        next_table_id = (table_id / 2 + 1) * 2;
+                    }
+                }
+            }
+            debug!("next table ID: {}", next_table_id);
+
+            // load the metadata
+            manager.load_filters()?;
+            manager.load_indexes()?;
         }
+
+        Ok((manager, next_table_id))
     }
 
     pub fn register(
@@ -39,7 +70,7 @@ impl SstableManager {
         index: SparseIndex,
     ) -> Result<(), std::io::Error> {
         self.write_filter(table_id, &filter)?;
-        self.write_index(table_id, &index)?;
+        self.write_index(&index)?;
 
         self.filters.write().unwrap().insert(table_id, filter);
         self.indexes.write().unwrap().insert(table_id, index);
@@ -121,16 +152,90 @@ impl SstableManager {
         let (file, _) = file_utility::open_file(&file_path)?;
         let mut writer = BufWriter::new(&file);
 
-        let mut encoded: Vec<u8> = Vec::new();
-        encoded.extend(&(table_id as u32).to_le_bytes());
-        encoded.extend(&(filter.number_of_bits() / 8).to_le_bytes());
-        encoded.extend(filter.bitmap());
-        encoded.extend(&filter.number_of_hash_functions().to_le_bytes());
-        let [k1, k2] = filter.sip_keys();
-        encoded.extend(&k1.0.to_le_bytes());
-        encoded.extend(&k1.1.to_le_bytes());
-        encoded.extend(&k2.0.to_le_bytes());
-        encoded.extend(&k2.1.to_le_bytes());
+        let elements = BloomElements {
+            table_id,
+            bitmap_bits: filter.number_of_bits(),
+            k_num: filter.number_of_hash_functions(),
+            sip_keys: filter.sip_keys(),
+            bitmap: filter.bitmap(),
+        };
+        let encoded = bincode::serialize(&elements).expect("serializing the filter failed");
+        let mut data: Vec<u8> = Vec::new();
+        data.extend(&(encoded.len() as u32).to_le_bytes());
+        data.extend(&encoded);
+        data.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
+
+        writer.write(&data)?;
+
+        Ok(())
+    }
+
+    fn load_filters(&self) -> Result<(), std::io::Error> {
+        let file_path = self.config.get_filter_file_path(&self.name);
+        let (file, _) = file_utility::open_file(&file_path)?;
+        let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
+
+        while let Some((id, filter)) = self.read_filter(&mut reader)? {
+            self.filters.write().unwrap().insert(id, filter);
+        }
+
+        Ok(())
+    }
+
+    fn read_filter(
+        &self,
+        reader: &mut BufReader<File>,
+    ) -> Result<Option<(usize, Bloom<Vec<u8>>)>, std::io::Error> {
+        let mut size_buf = [0_u8; data_utility::LEN_SIZE];
+        let len = reader.read(&mut size_buf)?;
+        if len == 0 {
+            return Ok(None);
+        }
+        let size = u32::from_le_bytes(size_buf) as usize;
+
+        let mut data = vec![0_u8; size];
+        reader.read(&mut data)?;
+
+        let mut crc_buf = [0_u8; data_utility::LEN_CRC];
+        reader.read(&mut crc_buf)?;
+        let crc = u32::from_le_bytes(crc_buf);
+
+        data_utility::check_crc(data.as_slice(), crc)?;
+
+        let elements: BloomElements = match bincode::deserialize(&data) {
+            Ok(e) => e,
+            // TODO: replace with an amphis error
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    "failed to deserialize bloom elements",
+                ))
+            }
+        };
+        let filter = Bloom::from_existing(
+            &elements.bitmap,
+            elements.bitmap_bits,
+            elements.k_num,
+            elements.sip_keys,
+        );
+        Ok(Some((elements.table_id, filter)))
+    }
+
+    fn write_index(&self, index: &SparseIndex) -> Result<(), std::io::Error> {
+        let file_path = self.config.get_index_file_path(&self.name);
+        let (file, _) = file_utility::open_file(&file_path)?;
+        let mut writer = BufWriter::new(&file);
+
+        let encoded = match bincode::serialize(&index) {
+            Ok(b) => b,
+            // TODO: replace with an amphis error
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    "failed to serialize a sparse index",
+                ))
+            }
+        };
 
         let mut data: Vec<u8> = Vec::new();
         data.extend(&(encoded.len() as u32).to_le_bytes());
@@ -142,31 +247,51 @@ impl SstableManager {
         Ok(())
     }
 
-    fn write_index(&self, table_id: usize, index: &SparseIndex) -> Result<(), std::io::Error> {
+    fn load_indexes(&self) -> Result<(), std::io::Error> {
         let file_path = self.config.get_index_file_path(&self.name);
         let (file, _) = file_utility::open_file(&file_path)?;
-        let mut writer = BufWriter::new(&file);
+        let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
 
-        let mut encoded: Vec<u8> = Vec::new();
-        encoded.extend(&(table_id as u32).to_le_bytes());
-        encoded.extend(match bincode::serialize(&index) {
-            Ok(b) => b,
+        while let Some(index) = self.read_index(&mut reader)? {
+            self.indexes
+                .write()
+                .unwrap()
+                .insert(index.get_table_id(), index);
+        }
+
+        Ok(())
+    }
+
+    fn read_index(
+        &self,
+        reader: &mut BufReader<File>,
+    ) -> Result<Option<SparseIndex>, std::io::Error> {
+        let mut size_buf = [0_u8; data_utility::LEN_SIZE];
+        let len = reader.read(&mut size_buf)?;
+        if len == 0 {
+            return Ok(None);
+        }
+        let size = u32::from_le_bytes(size_buf) as usize;
+
+        let mut data = vec![0_u8; size];
+        reader.read(&mut data)?;
+
+        let mut crc_buf = [0_u8; data_utility::LEN_CRC];
+        reader.read(&mut crc_buf)?;
+        let crc = u32::from_le_bytes(crc_buf);
+
+        data_utility::check_crc(data.as_slice(), crc)?;
+
+        let index: SparseIndex = match bincode::deserialize(&data) {
+            Ok(i) => i,
             // TODO: replace with an amphis error
             Err(_) => {
                 return Err(std::io::Error::new(
                     ErrorKind::Other,
-                    "failed to serialize a sparse index",
+                    "failed to deserialize a sparse index",
                 ))
             }
-        });
-
-        let mut data: Vec<u8> = Vec::new();
-        data.extend(&(encoded.len() as u32).to_le_bytes());
-        data.extend(&encoded);
-        data.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
-
-        writer.write(&data)?;
-
-        Ok(())
+        };
+        Ok(Some(index))
     }
 }

@@ -19,7 +19,6 @@ pub struct FPTreeManager {
 
 impl FPTreeManager {
     pub fn new(name: &str, config: Config) -> Result<Self, std::io::Error> {
-        // TODO: recovery (Flush all exsting FPTrees)
         let fptree_id = 0;
         Ok(FPTreeManager {
             name: name.to_string(),

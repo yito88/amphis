@@ -21,18 +21,8 @@ impl KVS {
     pub fn new(name: &str, config: Config) -> Result<Self, std::io::Error> {
         let path = config.get_data_dir_path(name);
         let mut flush_writer = FlushWriter::new(name, config.clone(), 0);
-        let sstable_manager = SstableManager::new(name, config.clone());
+        let (sstable_manager, next_table_id) = SstableManager::new(name, config.clone())?;
         if Path::new(&path).exists() {
-            // find the next table ID
-            let mut next_table_id = 0;
-            for entry in std::fs::read_dir(path.clone())? {
-                if let Some(table_id) = file_utility::get_table_id(&entry?.path()) {
-                    if next_table_id <= table_id {
-                        next_table_id = (table_id / 2 + 1) * 2;
-                    }
-                }
-            }
-            debug!("next table ID: {}", next_table_id);
             // flush the exsting trees
             flush_writer = FlushWriter::new(name, config.clone(), next_table_id);
             for entry in std::fs::read_dir(path)? {
