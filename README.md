@@ -21,10 +21,14 @@ An embedded key-value store
   - [x] Flush (converted to SSTable)
   - [x] Recovery (flush)
   - [ ] tail header (for durable write)
-  - [ ] Extended leaf page
+  - [x] Extended leaf page
 
 - SSTable
   - [x] SSTable file
   - [x] Bloom filter/Sparse index
   - [ ] Compaction
   - [x] Recovery
+
+- Others
+  - [ ] Error handling
+  - [ ] Backgound thread

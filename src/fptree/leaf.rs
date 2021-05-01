@@ -10,13 +10,14 @@ cfg_if::cfg_if! {
         use crate::fptree::leaf_manager::LeafManager;
     }
 }
-use super::leaf_manager::{LeafHeader, NUM_SLOT};
+use super::leaf_manager::{LeafHeader, INITIAL_TAIL_OFFSET, NUM_SLOT};
 use super::node::Node;
 
 pub struct Leaf {
     leaf_manager: Arc<RwLock<LeafManager>>,
     header: LeafHeader,
     id: usize,
+    page_id: usize,
     next: Option<Arc<RwLock<Leaf>>>,
     is_root: bool,
 }
@@ -45,10 +46,8 @@ impl Node for Leaf {
         None
     }
 
-    fn may_need_split(&self, key: &Vec<u8>, value: &Vec<u8>) -> bool {
-        let data_size = key.len() + value.len();
-
-        self.header.need_split(data_size)
+    fn may_need_split(&self) -> bool {
+        self.header.need_split()
     }
 
     fn insert(
@@ -60,8 +59,7 @@ impl Node for Leaf {
 
         self.invalidate_data(key)?;
 
-        let data_size = key.len() + value.len();
-        if self.header.need_split(data_size) {
+        if self.header.need_split() {
             let split_key = self.split()?;
             let new_leaf = self.get_next().expect("no next leaf");
             if split_key < *key {
@@ -77,21 +75,26 @@ impl Node for Leaf {
             ret = Some(split_key);
         }
 
-        if let Some(slot) = self.header.get_empty_slot() {
+        let slot = self.header.get_empty_slot().expect("no empty slot");
+        loop {
             let offset = self.header.get_tail_offset();
-            let tail_offset = self
-                .leaf_manager
-                .read()
-                .unwrap()
-                .write_data(self.id, offset, key, value)?;
-
-            self.header.set_slot(slot);
-            self.header.set_tail_offset(tail_offset);
-            self.header.set_fingerprint(slot, self.calc_key_hash(key));
-            self.header
-                .set_kv_info(slot, offset, key.len(), value.len());
-            self.commit()?;
+            let tail_offset =
+                self.leaf_manager
+                    .read()
+                    .unwrap()
+                    .write_data(self.page_id, offset, key, value)?;
+            match tail_offset {
+                Some(tail_offset) => {
+                    self.update_header_for_write(slot, tail_offset, key, value);
+                    break;
+                }
+                None => {
+                    // not enough space to write
+                    self.append_new_page()?;
+                }
+            }
         }
+        self.commit()?;
 
         trace!("Leaf: {}, key {:?}", self, key);
         Ok(ret)
@@ -100,9 +103,9 @@ impl Node for Leaf {
     fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         trace!("Read from Leaf: {}", self);
         for slot in self.get_existing_slots(key) {
-            let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+            let (page_id, data_offset, key_size, value_size) = self.header.get_kv_info(slot);
             let (actual_key, value) = self.leaf_manager.read().unwrap().read_data(
-                self.id,
+                page_id,
                 data_offset,
                 key_size,
                 value_size,
@@ -162,6 +165,7 @@ impl Leaf {
             leaf_manager,
             header,
             id,
+            page_id: id,
             next: None,
             is_root: false,
         })
@@ -176,10 +180,10 @@ impl Leaf {
 
         for slot in 0..NUM_SLOT {
             if self.header.is_slot_set(slot) {
-                let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+                let (page_id, data_offset, key_size, value_size) = self.header.get_kv_info(slot);
 
                 let (key, value) = self.leaf_manager.read().unwrap().read_data(
-                    self.id,
+                    page_id,
                     data_offset,
                     key_size,
                     value_size,
@@ -214,9 +218,9 @@ impl Leaf {
 
     fn invalidate_data(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
         for slot in self.get_existing_slots(key) {
-            let (data_offset, key_size, value_size) = self.header.get_kv_info(slot);
+            let (page_id, data_offset, key_size, value_size) = self.header.get_kv_info(slot);
             let (actual_key, _value) = self.leaf_manager.read().unwrap().read_data(
-                self.id,
+                page_id,
                 data_offset,
                 key_size,
                 value_size,
@@ -227,6 +231,35 @@ impl Leaf {
             }
         }
 
+        Ok(())
+    }
+
+    fn update_header_for_write(
+        &mut self,
+        slot: usize,
+        tail_offset: usize,
+        key: &Vec<u8>,
+        value: &Vec<u8>,
+    ) {
+        let offset = self.header.get_tail_offset();
+        self.header.set_slot(slot);
+        self.header.set_fingerprint(slot, self.calc_key_hash(key));
+        self.header
+            .set_kv_info(slot, self.page_id, offset, key.len(), value.len());
+        self.header.set_tail_offset(tail_offset);
+    }
+
+    fn append_new_page(&mut self) -> Result<(), std::io::Error> {
+        let new_page_id = self
+            .leaf_manager
+            .write()
+            .unwrap()
+            .allocate_ext_page(self.id)?;
+        self.page_id = new_page_id;
+        self.header.set_tail_offset(INITIAL_TAIL_OFFSET);
+        self.header.set_ext(new_page_id);
+
+        trace!("append a new leaf page {}", new_page_id);
         Ok(())
     }
 }
@@ -241,6 +274,7 @@ impl std::fmt::Display for Leaf {
 mod tests {
     use super::*;
     const DATA_UNIT: usize = 4 * 1024;
+    const LEAF_SIZE: usize = 1024 * 1024;
 
     fn make_new_leaf(id: usize) -> Leaf {
         let mut mock_leaf_manager = LeafManager::default();
@@ -280,7 +314,7 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
+            .returning(|_, offset, _, _| Ok(Some(offset + DATA_UNIT)));
 
         let k = "key".as_bytes().to_vec();
         let v = "value".as_bytes().to_vec();
@@ -293,8 +327,44 @@ mod tests {
         assert_eq!(leaf.header.get_tail_offset(), expected_tail_offset);
         assert_eq!(
             leaf.header.get_kv_info(0),
-            (expected_tail_offset - DATA_UNIT, k.len(), v.len())
+            (leaf.id, expected_tail_offset - DATA_UNIT, k.len(), v.len())
         );
+    }
+
+    #[test]
+    fn test_extended_page() {
+        let mut leaf = make_new_leaf(0);
+        leaf.leaf_manager
+            .write()
+            .unwrap()
+            .expect_write_data()
+            .returning(|_, offset, k, v| {
+                if (offset + k.len() + v.len()) <= LEAF_SIZE {
+                    Ok(Some(offset + k.len() + v.len()))
+                } else {
+                    Ok(None)
+                }
+            });
+        leaf.leaf_manager
+            .write()
+            .unwrap()
+            .expect_allocate_ext_page()
+            .returning(|id| Ok(id + 1));
+
+        let k0 = vec![0; 256 * 1024];
+        let v0 = vec![0; 256 * 1024];
+        leaf.insert(&k0, &v0).unwrap();
+
+        let k1 = vec![1; 256 * 1024];
+        let v1 = vec![1; 256 * 1024];
+        leaf.insert(&k1, &v1).unwrap();
+
+        let expected_tail_offset = DATA_UNIT;
+        assert_eq!(
+            leaf.header.get_kv_info(1),
+            (leaf.id + 1, expected_tail_offset, k1.len(), v1.len())
+        );
+        assert_eq!(leaf.header.get_ext().expect("no ext page"), leaf.id + 1);
     }
 
     #[test]
@@ -304,7 +374,7 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
+            .returning(|_, offset, _, _| Ok(Some(offset + DATA_UNIT)));
 
         let any_slot = NUM_SLOT / 2;
         for i in 0..any_slot {
@@ -327,7 +397,7 @@ mod tests {
         assert_eq!(leaf.header.get_tail_offset(), expected_tail_offset);
         assert_eq!(
             leaf.header.get_kv_info(any_slot),
-            ((any_slot + 1) * DATA_UNIT, k.len(), v.len())
+            (leaf.id, (any_slot + 1) * DATA_UNIT, k.len(), v.len())
         );
     }
 
@@ -338,7 +408,7 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
+            .returning(|_, offset, _, _| Ok(Some(offset + DATA_UNIT)));
         leaf.leaf_manager
             .write()
             .unwrap()
@@ -369,7 +439,7 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
+            .returning(|_, offset, _, _| Ok(Some(offset + DATA_UNIT)));
         leaf.leaf_manager
             .write()
             .unwrap()
@@ -394,7 +464,7 @@ mod tests {
         assert_eq!(leaf.header.get_tail_offset(), expected_tail_offset);
         assert_eq!(
             leaf.header.get_kv_info(3),
-            (expected_tail_offset - DATA_UNIT, k.len(), v2.len())
+            (leaf.id, expected_tail_offset - DATA_UNIT, k.len(), v2.len())
         );
     }
 
@@ -405,7 +475,7 @@ mod tests {
             .write()
             .unwrap()
             .expect_write_data()
-            .returning(|_, offset, _, _| Ok(offset + DATA_UNIT));
+            .returning(|_, offset, _, _| Ok(Some(offset + DATA_UNIT)));
         leaf.leaf_manager
             .write()
             .unwrap()

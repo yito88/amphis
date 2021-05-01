@@ -53,7 +53,7 @@ impl Node for Inner {
         }
     }
 
-    fn may_need_split(&self, _key: &Vec<u8>, _value: &Vec<u8>) -> bool {
+    fn may_need_split(&self) -> bool {
         self.keys.len() == FANOUT
     }
 
@@ -173,7 +173,7 @@ mod tests {
         ) -> Result<Option<Vec<u8>>, std::io::Error> {
             Ok(None)
         }
-        fn may_need_split(&self, _key: &Vec<u8>, _value: &Vec<u8>) -> bool {
+        fn may_need_split(&self) -> bool {
             false
         }
         fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {

@@ -85,7 +85,7 @@ impl FPTree {
         let mut is_root_locked = true;
         for i in 0..nodes.len() {
             let locked_node = nodes[i].write().unwrap();
-            if !locked_node.may_need_split(key, value) {
+            if !locked_node.may_need_split() {
                 is_root_locked = false;
                 locked_nodes.clear();
             }

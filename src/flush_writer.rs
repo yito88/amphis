@@ -87,9 +87,9 @@ impl FlushWriter {
             let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(NUM_SLOT);
             for slot in 0..NUM_SLOT {
                 if header.is_slot_set(slot) {
-                    let (data_offset, key_size, value_size) = header.get_kv_info(slot);
+                    let (page_id, data_offset, key_size, value_size) = header.get_kv_info(slot);
                     let (key, value) = leaf_manager.read().unwrap().read_data(
-                        id,
+                        page_id,
                         data_offset,
                         key_size,
                         value_size,
