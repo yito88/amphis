@@ -1,15 +1,15 @@
 use bloomfilter::Bloom;
-use log::{debug, trace};
+use log::debug;
 use mockall_double::double;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
-use crate::data_utility;
-use crate::fptree::leaf::Leaf;
 use crate::fptree::leaf_manager::NUM_SLOT;
-use crate::sstable::sparse_index::SparseIndex;
+use crate::fptree::Leaf;
+use crate::sparse_index::SparseIndex;
+use crate::util::data_util;
 
 #[double]
 use crate::fptree::leaf_manager::LeafManager;
@@ -100,11 +100,11 @@ impl FlushWriter {
             // it is enough to sort only kv_pairs since all leaves are ordered
             kv_pairs.sort();
             for (key, value) in kv_pairs {
-                writer.write(&data_utility::format_data_with_crc(&key, &value))?;
+                writer.write(&data_util::format_data_with_crc(&key, &value))?;
                 filter.set(&key);
                 index.insert(&key, offset);
 
-                offset += data_utility::get_data_size(key.len(), value.len());
+                offset += data_util::get_data_size(key.len(), value.len());
             }
         }
         table_file.sync_all()?;

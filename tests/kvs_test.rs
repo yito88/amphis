@@ -2,6 +2,8 @@ extern crate amphis;
 use amphis::config::Config;
 use amphis::kvs::KVS;
 use env_logger;
+use std::sync::{mpsc, Arc};
+use threadpool::ThreadPool;
 
 #[test]
 fn test_mutations() {
@@ -88,6 +90,68 @@ fn test_recovery() {
 
         assert_eq!(actual, expected);
     }
+
+    let _ = std::fs::remove_dir_all(format!("tests/{}", TABLE_NAME));
+}
+
+#[test]
+fn concurrent_insert() {
+    let _ = env_logger::builder().is_test(true).try_init();
+    const NUM_INSERTION: usize = 1025;
+    const NUM_THREADS: usize = 4;
+    const TABLE_NAME: &str = "concurrency_test";
+    let conf = "data_dir = 'tests'\nbloom_filter_size = 32768";
+    let config = Config::new_with_str(conf);
+    let kvs = Arc::new(amphis::kvs::KVS::new(TABLE_NAME, config).expect("failed to start Amphis"));
+
+    let (tx, rx) = mpsc::channel();
+    let pool = ThreadPool::new(if NUM_THREADS <= 1 { 1 } else { NUM_THREADS });
+
+    for i in 0..NUM_THREADS {
+        let each = kvs.clone();
+
+        let tx = tx.clone();
+        pool.execute(move || {
+            for v in 0..NUM_INSERTION {
+                let key = format!("k{}:{}", v, i).as_bytes().to_vec();
+                let value = format!("v{}:{}", v, i).as_bytes().to_vec();
+                each.put(&key, &value).unwrap();
+            }
+            let result = 0;
+            tx.send(result)
+                .expect("channel will be there waiting for the pool");
+        });
+    }
+
+    assert_eq!(rx.iter().take(NUM_THREADS).all(|r| r == 0), true);
+
+    for i in 0..NUM_THREADS {
+        let each = kvs.clone();
+
+        let tx = tx.clone();
+        pool.execute(move || {
+            for v in 0..NUM_INSERTION {
+                let key = format!("k{}:{}", v, i);
+                let expected = format!("v{}:{}", v, i);
+                match each.get(&key.as_bytes().to_vec()).unwrap() {
+                    Some(value) => {
+                        let actual = String::from_utf8(value.to_vec()).unwrap();
+
+                        match expected {
+                            _ if expected == actual => println!("Get result {}", actual),
+                            _ => panic!("expected: {}, actual: {}", expected, actual),
+                        }
+                    }
+                    None => panic!("expected: {}, actual: None", expected),
+                };
+            }
+            let result = 0;
+            tx.send(result)
+                .expect("channel will be there waiting for the pool");
+        });
+    }
+
+    assert_eq!(rx.iter().take(NUM_THREADS).all(|r| r == 0), true);
 
     let _ = std::fs::remove_dir_all(format!("tests/{}", TABLE_NAME));
 }

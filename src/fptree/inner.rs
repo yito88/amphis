@@ -1,4 +1,4 @@
-use log::trace;
+use log::{debug, trace};
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -41,7 +41,7 @@ impl Node for Inner {
     }
 
     fn get_child(&self, key: &Vec<u8>) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
-        trace!("check an inner - {} by key {:?}", self, key);
+        debug!("check an inner - {} by key {:?}", self, key);
         let child_idx = match self.keys.binary_search(key) {
             Ok(i) => i + 1,
             Err(i) => i,
@@ -109,7 +109,7 @@ impl Node for Inner {
         }
         trace!("split existing inner: {}", self);
         trace!("new inner: {}", new_inner);
-        trace!("split_key: {:?}", split_key.clone());
+        debug!("split_key: {:?}", split_key.clone());
         self.next = Some(Arc::new(RwLock::new(new_inner)));
 
         Ok(split_key)

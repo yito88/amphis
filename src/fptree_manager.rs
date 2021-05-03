@@ -1,9 +1,8 @@
-use log::trace;
+use log::info;
 use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
-use crate::fptree::fptree::FPTree;
-use crate::fptree::leaf::Leaf;
+use crate::fptree::{FPTree, Leaf};
 
 // TODO: parameterize
 const SPLIT_THRESHOLD: usize = 6;
@@ -136,7 +135,7 @@ impl FPTreeManager {
             None => panic!("no new FPTree after a flush"),
         }
 
-        trace!("completed flushing FPTree {}", *locked_fptree_id - 1);
+        info!("completed flushing FPTree {}", *locked_fptree_id - 1);
 
         Ok(())
     }

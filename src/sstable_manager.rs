@@ -1,5 +1,5 @@
 use bloomfilter::Bloom;
-use log::{debug, trace};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -11,8 +11,8 @@ use std::sync::{Arc, RwLock};
 
 use super::sparse_index::SparseIndex;
 use crate::config::Config;
-use crate::data_utility;
-use crate::file_utility;
+use crate::util::data_util;
+use crate::util::file_util;
 
 const READ_BUFFER_SIZE: usize = 1 << 16;
 
@@ -47,7 +47,7 @@ impl SstableManager {
         if Path::new(&path).exists() {
             // find the next table ID
             for entry in std::fs::read_dir(path.clone())? {
-                if let Some(table_id) = file_utility::get_table_id(&entry?.path()) {
+                if let Some(table_id) = file_util::get_table_id(&entry?.path()) {
                     if next_table_id <= table_id {
                         next_table_id = (table_id / 2 + 1) * 2;
                     }
@@ -80,16 +80,15 @@ impl SstableManager {
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         for (table_id, filter) in self.filters.read().unwrap().iter().rev() {
-            trace!(
+            debug!(
                 "Check the bloom filter of SSTable {} with {:?}",
-                table_id,
-                key
+                table_id, key
             );
             if !filter.check(key) {
                 continue;
             }
 
-            trace!("Read from SSTable {} with {:?}", table_id, key);
+            debug!("Read from SSTable {} with {:?}", table_id, key);
             let indexes = self.indexes.read().unwrap();
             let index = indexes.get(&table_id).unwrap();
             let offset = index.get(key);
@@ -128,7 +127,7 @@ impl SstableManager {
     }
 
     fn read_data(&self, reader: &mut BufReader<File>) -> Result<Option<Vec<u8>>, std::io::Error> {
-        let mut size_buf = [0_u8; data_utility::LEN_SIZE];
+        let mut size_buf = [0_u8; data_util::LEN_SIZE];
         let len = reader.read(&mut size_buf)?;
         if len == 0 {
             return Ok(None);
@@ -138,18 +137,18 @@ impl SstableManager {
         let mut data = vec![0_u8; size];
         reader.read(&mut data)?;
 
-        let mut crc_buf = [0_u8; data_utility::LEN_CRC];
+        let mut crc_buf = [0_u8; data_util::LEN_CRC];
         reader.read(&mut crc_buf)?;
         let crc = u32::from_le_bytes(crc_buf);
 
-        data_utility::check_crc(data.as_slice(), crc)?;
+        data_util::check_crc(data.as_slice(), crc)?;
 
         Ok(Some(data))
     }
 
     fn write_filter(&self, table_id: usize, filter: &Bloom<Vec<u8>>) -> Result<(), std::io::Error> {
         let file_path = self.config.get_filter_file_path(&self.name);
-        let (file, _) = file_utility::open_file(&file_path)?;
+        let (file, _) = file_util::open_file(&file_path)?;
         let mut writer = BufWriter::new(&file);
 
         let elements = BloomElements {
@@ -163,7 +162,7 @@ impl SstableManager {
         let mut data: Vec<u8> = Vec::new();
         data.extend(&(encoded.len() as u32).to_le_bytes());
         data.extend(&encoded);
-        data.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
+        data.extend(&data_util::calc_crc(&encoded).to_le_bytes());
 
         writer.write(&data)?;
 
@@ -172,7 +171,7 @@ impl SstableManager {
 
     fn load_filters(&self) -> Result<(), std::io::Error> {
         let file_path = self.config.get_filter_file_path(&self.name);
-        let (file, _) = file_utility::open_file(&file_path)?;
+        let (file, _) = file_util::open_file(&file_path)?;
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
 
         while let Some((id, filter)) = self.read_filter(&mut reader)? {
@@ -186,7 +185,7 @@ impl SstableManager {
         &self,
         reader: &mut BufReader<File>,
     ) -> Result<Option<(usize, Bloom<Vec<u8>>)>, std::io::Error> {
-        let mut size_buf = [0_u8; data_utility::LEN_SIZE];
+        let mut size_buf = [0_u8; data_util::LEN_SIZE];
         let len = reader.read(&mut size_buf)?;
         if len == 0 {
             return Ok(None);
@@ -196,11 +195,11 @@ impl SstableManager {
         let mut data = vec![0_u8; size];
         reader.read(&mut data)?;
 
-        let mut crc_buf = [0_u8; data_utility::LEN_CRC];
+        let mut crc_buf = [0_u8; data_util::LEN_CRC];
         reader.read(&mut crc_buf)?;
         let crc = u32::from_le_bytes(crc_buf);
 
-        data_utility::check_crc(data.as_slice(), crc)?;
+        data_util::check_crc(data.as_slice(), crc)?;
 
         let elements: BloomElements = match bincode::deserialize(&data) {
             Ok(e) => e,
@@ -223,7 +222,7 @@ impl SstableManager {
 
     fn write_index(&self, index: &SparseIndex) -> Result<(), std::io::Error> {
         let file_path = self.config.get_index_file_path(&self.name);
-        let (file, _) = file_utility::open_file(&file_path)?;
+        let (file, _) = file_util::open_file(&file_path)?;
         let mut writer = BufWriter::new(&file);
 
         let encoded = match bincode::serialize(&index) {
@@ -240,7 +239,7 @@ impl SstableManager {
         let mut data: Vec<u8> = Vec::new();
         data.extend(&(encoded.len() as u32).to_le_bytes());
         data.extend(&encoded);
-        data.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
+        data.extend(&data_util::calc_crc(&encoded).to_le_bytes());
 
         writer.write(&data)?;
 
@@ -249,7 +248,7 @@ impl SstableManager {
 
     fn load_indexes(&self) -> Result<(), std::io::Error> {
         let file_path = self.config.get_index_file_path(&self.name);
-        let (file, _) = file_utility::open_file(&file_path)?;
+        let (file, _) = file_util::open_file(&file_path)?;
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
 
         while let Some(index) = self.read_index(&mut reader)? {
@@ -266,7 +265,7 @@ impl SstableManager {
         &self,
         reader: &mut BufReader<File>,
     ) -> Result<Option<SparseIndex>, std::io::Error> {
-        let mut size_buf = [0_u8; data_utility::LEN_SIZE];
+        let mut size_buf = [0_u8; data_util::LEN_SIZE];
         let len = reader.read(&mut size_buf)?;
         if len == 0 {
             return Ok(None);
@@ -276,11 +275,11 @@ impl SstableManager {
         let mut data = vec![0_u8; size];
         reader.read(&mut data)?;
 
-        let mut crc_buf = [0_u8; data_utility::LEN_CRC];
+        let mut crc_buf = [0_u8; data_util::LEN_CRC];
         reader.read(&mut crc_buf)?;
         let crc = u32::from_le_bytes(crc_buf);
 
-        data_utility::check_crc(data.as_slice(), crc)?;
+        data_util::check_crc(data.as_slice(), crc)?;
 
         let index: SparseIndex = match bincode::deserialize(&data) {
             Ok(i) => i,

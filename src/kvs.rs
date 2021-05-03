@@ -1,17 +1,15 @@
-use log::{debug, trace};
+use log::{debug, info, trace};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 //use crate::amphis_error::CrudError;
 use crate::config::Config;
-use crate::file_utility;
 use crate::flush_writer::FlushWriter;
 use crate::fptree_manager::FPTreeManager;
-use crate::sstable::sstable_manager::SstableManager;
+use crate::sstable_manager::SstableManager;
+use crate::util::file_util;
 
 pub struct KVS {
-    name: String,
-    config: Config,
     fptree_manager: Arc<FPTreeManager>,
     sstable_manager: Arc<SstableManager>,
     flush_writer: Arc<RwLock<FlushWriter>>,
@@ -26,8 +24,8 @@ impl KVS {
             // flush the exsting trees
             flush_writer = FlushWriter::new(name, config.clone(), next_table_id);
             for entry in std::fs::read_dir(path)? {
-                if let Some(fptree_id) = file_utility::get_tree_id(&entry?.path()) {
-                    trace!("found FPTree ID: {}", fptree_id);
+                if let Some(fptree_id) = file_util::get_tree_id(&entry?.path()) {
+                    debug!("found FPTree ID: {}", fptree_id);
                     let (table_id, filter, index) =
                         flush_writer.flush_with_file(name, fptree_id)?;
                     sstable_manager.register(table_id, filter, index)?;
@@ -36,9 +34,8 @@ impl KVS {
                 }
             }
         }
+        info!("Amphis has started: table {}", name);
         Ok(KVS {
-            name: name.to_string(),
-            config: config.clone(),
             fptree_manager: Arc::new(FPTreeManager::new(name, config.clone())?),
             sstable_manager: Arc::new(sstable_manager),
             flush_writer: Arc::new(RwLock::new(flush_writer)),

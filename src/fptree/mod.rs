@@ -1,11 +1,16 @@
-use log::trace;
+mod inner;
+mod leaf;
+pub mod leaf_manager;
+mod node;
+
+use log::debug;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::RwLockWriteGuard;
 
-use super::inner::Inner;
-use super::leaf::Leaf;
+use inner::Inner;
+pub use leaf::Leaf;
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         use crate::fptree::leaf_manager::MockLeafManager as LeafManager;
@@ -13,8 +18,8 @@ cfg_if::cfg_if! {
         use crate::fptree::leaf_manager::LeafManager;
     }
 }
-use super::node::Node;
 use crate::config::Config;
+use node::Node;
 
 pub struct FPTree {
     root_ptr: Arc<RwLock<Arc<RwLock<dyn Node + Send + Sync>>>>,
@@ -51,7 +56,7 @@ impl FPTree {
         mut locked_root: RwLockWriteGuard<Arc<RwLock<dyn Node + Send + Sync>>>,
         locked_new_child: Arc<RwLock<dyn Node + Send + Sync>>,
     ) {
-        trace!("Root split: {:?}", key);
+        debug!("Root split: {:?}", key);
         let mut new_root = Inner::new();
         new_root.set_root(true);
         new_root.add_key(key);

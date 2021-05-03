@@ -9,8 +9,8 @@ use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
 
 use crate::config::Config;
-use crate::data_utility;
-use crate::file_utility;
+use crate::util::data_util;
+use crate::util::file_util;
 
 #[cfg(test)]
 use mockall::automock;
@@ -23,6 +23,8 @@ const LEAF_SIZE: usize = 1024 * 1024;
 // for header format
 const HEADER_MAGIC: u32 = 0x1234;
 const INVALID_LEAF_ID: u32 = u32::MAX;
+pub const INITIAL_TAIL_OFFSET: usize = data_util::DATA_ALIGNMENT;
+const END_TAIL_OFFSET: usize = LEAF_SIZE - data_util::DATA_ALIGNMENT;
 const LEN_HEADER_MAGIC: usize = 4;
 const LEN_BITMAP: usize = NUM_SLOT / 8;
 const LEN_NEXT: usize = 4;
@@ -37,8 +39,7 @@ pub const LEAF_HEADER_SIZE: usize = LEN_HEADER_MAGIC
     + LEN_TAIL_OFFSET
     + LEN_FINGERPRINTS
     + LEN_KV_INFO
-    + data_utility::LEN_CRC;
-pub const INITIAL_TAIL_OFFSET: usize = data_utility::DATA_ALIGNMENT;
+    + data_util::LEN_CRC;
 
 pub struct LeafManager {
     leaves_file: File,
@@ -75,7 +76,7 @@ impl LeafManager {
         }
 
         let file_path = config.get_leaf_file_path(name, id);
-        let (file, is_created) = file_utility::open_file(&file_path)?;
+        let (file, is_created) = file_util::open_file(&file_path)?;
         let mut manager = LeafManager {
             leaves_file: file,
             free_leaves: VecDeque::new(),
@@ -144,7 +145,7 @@ impl LeafManager {
         Ok(())
     }
 
-    pub fn mmap_header(&self, id: usize) -> Result<MmapMut, std::io::Error> {
+    fn mmap_header(&self, id: usize) -> Result<MmapMut, std::io::Error> {
         // TODO: protect the header when write failure (tail header)
         let offset = id * LEAF_SIZE;
         let mmap = unsafe {
@@ -180,7 +181,7 @@ impl LeafManager {
                 ))
             }
         };
-        encoded.extend(&data_utility::calc_crc(&encoded).to_le_bytes());
+        encoded.extend(&data_util::calc_crc(&encoded).to_le_bytes());
         mmap.copy_from_slice(&encoded);
         mmap.flush()?;
 
@@ -195,21 +196,21 @@ impl LeafManager {
         value_size: usize,
     ) -> Result<(Vec<u8>, Vec<u8>), std::io::Error> {
         let data_offset = id * LEAF_SIZE + offset;
-        let data_size = data_utility::get_data_size(key_size, value_size);
+        let data_size = data_util::get_data_size(key_size, value_size);
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(data_offset as u64)
                 .len(data_size)
                 .map(&self.leaves_file)?
         };
-        let bound_offset = data_utility::get_bound_offset(key_size);
-        data_utility::check_slot_crc(&mmap[..bound_offset])?;
-        data_utility::check_slot_crc(&mmap[bound_offset..])?;
-        let (key_start, key_end) = data_utility::get_key_offset(key_size);
+        let bound_offset = data_util::get_bound_offset(key_size);
+        data_util::check_slot_crc(&mmap[..bound_offset])?;
+        data_util::check_slot_crc(&mmap[bound_offset..])?;
+        let (key_start, key_end) = data_util::get_key_offset(key_size);
         if value_size == 0 {
             Ok((mmap[key_start..key_end].to_vec(), Vec::new()))
         } else {
-            let (value_start, value_end) = data_utility::get_value_offset(key_size, value_size);
+            let (value_start, value_end) = data_util::get_value_offset(key_size, value_size);
             Ok((
                 mmap[key_start..key_end].to_vec(),
                 mmap[value_start..value_end].to_vec(),
@@ -224,9 +225,9 @@ impl LeafManager {
         key: &Vec<u8>,
         value: &Vec<u8>,
     ) -> Result<Option<usize>, std::io::Error> {
-        let data_size = data_utility::get_data_size(key.len(), value.len());
-        let aligned_tail = offset + data_utility::round_up_size(data_size);
-        if aligned_tail > LEAF_SIZE {
+        let data_size = data_util::get_data_size(key.len(), value.len());
+        let aligned_tail = offset + data_util::round_up_size(data_size);
+        if aligned_tail > END_TAIL_OFFSET {
             return Ok(None);
         }
         let data_offset = id * LEAF_SIZE + offset;
@@ -237,7 +238,7 @@ impl LeafManager {
                 .map_mut(&self.leaves_file)?
         };
 
-        let data = data_utility::format_data_with_crc(&key, &value);
+        let data = data_util::format_data_with_crc(&key, &value);
         mmap.copy_from_slice(&data);
         mmap.flush()?;
 
@@ -277,7 +278,7 @@ impl LeafManager {
                 continue;
             }
 
-            match data_utility::check_header_crc(&mmap) {
+            match data_util::check_header_crc(&mmap) {
                 Ok(_) => {
                     self.header_mmap.insert(id, Arc::new(RwLock::new(mmap)));
                 }
