@@ -10,8 +10,7 @@ fn test_mutations() {
     let _ = env_logger::builder().is_test(true).try_init();
     const NUM_INSERTION: usize = 1025;
     const TABLE_NAME: &str = "mutation_test";
-    let conf = "data_dir = 'tests'\nbloom_filter_size = 32768";
-    let config = Config::new_with_str(conf);
+    let config = Config::new();
     let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
 
     // INSERT
@@ -54,7 +53,7 @@ fn test_mutations() {
         }
     }
 
-    let _ = std::fs::remove_dir_all(format!("tests/{}", TABLE_NAME));
+    let _ = std::fs::remove_dir_all(format!("data/{}", TABLE_NAME));
 }
 
 #[test]
@@ -62,8 +61,7 @@ fn test_recovery() {
     let _ = env_logger::builder().is_test(true).try_init();
     const NUM_INSERTION: usize = 1025;
     const TABLE_NAME: &str = "recovery_test";
-    let conf = "data_dir = 'tests'\nbloom_filter_size = 32768";
-    let config = Config::new_with_str(conf);
+    let config = Config::new();
     let kvs = KVS::new(TABLE_NAME, config.clone()).unwrap();
 
     // INSERT
@@ -91,7 +89,7 @@ fn test_recovery() {
         assert_eq!(actual, expected);
     }
 
-    let _ = std::fs::remove_dir_all(format!("tests/{}", TABLE_NAME));
+    let _ = std::fs::remove_dir_all(format!("data/{}", TABLE_NAME));
 }
 
 #[test]
@@ -100,8 +98,7 @@ fn concurrent_insert() {
     const NUM_INSERTION: usize = 1025;
     const NUM_THREADS: usize = 4;
     const TABLE_NAME: &str = "concurrency_test";
-    let conf = "data_dir = 'tests'\nbloom_filter_size = 32768";
-    let config = Config::new_with_str(conf);
+    let config = Config::new();
     let kvs = Arc::new(amphis::kvs::KVS::new(TABLE_NAME, config).expect("failed to start Amphis"));
 
     let (tx, rx) = mpsc::channel();
@@ -153,5 +150,5 @@ fn concurrent_insert() {
 
     assert_eq!(rx.iter().take(NUM_THREADS).all(|r| r == 0), true);
 
-    let _ = std::fs::remove_dir_all(format!("tests/{}", TABLE_NAME));
+    let _ = std::fs::remove_dir_all(format!("data/{}", TABLE_NAME));
 }

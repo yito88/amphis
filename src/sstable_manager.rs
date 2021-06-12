@@ -34,7 +34,7 @@ struct BloomElements {
 
 impl SstableManager {
     pub fn new(name: &str, config: Config) -> Result<(Self, usize), std::io::Error> {
-        let path = config.get_data_dir_path(name);
+        let path = config.get_table_dir_path(name);
         let manager = SstableManager {
             name: name.to_string(),
             config,

@@ -13,8 +13,7 @@ use crate::util::data_util;
 
 #[double]
 use crate::fptree::leaf_manager::LeafManager;
-// TODO: parameterize
-const ITEMS_COUNT: usize = 1 << 13;
+
 const WRITE_BUFFER_SIZE: usize = 1 << 18;
 
 pub struct FlushWriter {
@@ -76,7 +75,10 @@ impl FlushWriter {
         let mut offset = 0;
         let (table_id, table_file) = self.create_new_table()?;
         let mut index = SparseIndex::new(table_id);
-        let mut filter = Bloom::new(self.config.get_bloom_filter_size(), ITEMS_COUNT);
+        let mut filter = Bloom::new_for_fp_rate(
+            self.config.get_filter_items_count(),
+            self.config.get_filter_fp_rate(),
+        );
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, &table_file);
         for id in id_list {
             let header = leaf_manager

@@ -4,7 +4,6 @@ use std::sync::RwLock;
 
 use super::node::Node;
 
-// TODO: parameterize them
 const FANOUT: usize = 3;
 
 pub struct Inner {

@@ -17,7 +17,7 @@ pub struct KVS {
 
 impl KVS {
     pub fn new(name: &str, config: Config) -> Result<Self, std::io::Error> {
-        let path = config.get_data_dir_path(name);
+        let path = config.get_leaf_dir_path(name);
         let mut flush_writer = FlushWriter::new(name, config.clone(), 0);
         let (sstable_manager, next_table_id) = SstableManager::new(name, config.clone())?;
         if Path::new(&path).exists() {

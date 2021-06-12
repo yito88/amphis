@@ -1,2 +1,4 @@
-data_dir = 'data'
-bloom_filter_size = 32768
+leaf_dir = 'data'
+table_dir = 'data'
+bloom_filter_items_count = 8192
+bloom_filter_fp_rate = 0.01
