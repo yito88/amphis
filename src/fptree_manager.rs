@@ -32,13 +32,18 @@ impl FPTreeManager {
     }
 
     pub fn need_flush(&self) -> bool {
-        self.fptree_ptr
-            .read()
-            .unwrap()
-            .read()
-            .unwrap()
-            .get_root_split_count()
-            > SPLIT_THRESHOLD
+        let new_fptree = self.new_fptree_ptr.read().unwrap();
+        let count = match &*new_fptree {
+            Some(new) => new.read().unwrap().get_root_split_count(),
+            None => self
+                .fptree_ptr
+                .read()
+                .unwrap()
+                .read()
+                .unwrap()
+                .get_root_split_count(),
+        };
+        count > SPLIT_THRESHOLD
     }
 
     pub fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
@@ -118,7 +123,7 @@ impl FPTreeManager {
         Ok(Some(first_leaf))
     }
 
-    pub fn swith_fptree(&self) -> Result<(), std::io::Error> {
+    pub fn switch_fptree(&self) -> Result<(), std::io::Error> {
         let mut locked_fptree_id = self.fptree_id.write().unwrap();
         let mut locked_new = self.new_fptree_ptr.write().unwrap();
         match &*locked_new {

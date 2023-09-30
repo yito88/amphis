@@ -1,10 +1,12 @@
+use crossbeam_channel::Sender;
 use log::{debug, info, trace};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 
 //use crate::amphis_error::CrudError;
 use crate::config::Config;
-use crate::flush_writer::FlushWriter;
+use crate::flush_writer::{spawn_flush_writer, FlushSignal, FlushWriter};
 use crate::fptree_manager::FPTreeManager;
 use crate::sstable_manager::SstableManager;
 use crate::util::file_util;
@@ -12,18 +14,23 @@ use crate::util::file_util;
 pub struct KVS {
     fptree_manager: Arc<FPTreeManager>,
     sstable_manager: Arc<SstableManager>,
-    flush_writer: Arc<RwLock<FlushWriter>>,
+    flush_writer_handle: JoinHandle<()>,
+    sender: Sender<FlushSignal>,
 }
 
 impl KVS {
     pub fn new(name: &str, config: Config) -> Result<Self, std::io::Error> {
         let path = config.get_leaf_dir_path(name);
-        let mut flush_writer = FlushWriter::new(name, config.clone(), 0);
+        let (tx, rx) = crossbeam_channel::unbounded::<FlushSignal>();
+
         let (sstable_manager, next_table_id) = SstableManager::new(name, config.clone())?;
+        let sstable_manager = Arc::new(sstable_manager);
+
+        let mut flush_writer = FlushWriter::new(name, config.clone(), next_table_id);
         if Path::new(&path).exists() {
             // flush the exsting trees
-            flush_writer = FlushWriter::new(name, config.clone(), next_table_id);
             for entry in std::fs::read_dir(path)? {
+                println!("DEBUG: {:?}", entry);
                 if let Some(fptree_id) = file_util::get_tree_id(&entry?.path()) {
                     debug!("found FPTree ID: {}", fptree_id);
                     let (table_id, filter, index) =
@@ -34,11 +41,21 @@ impl KVS {
                 }
             }
         }
+
+        let fptree_manager = Arc::new(FPTreeManager::new(name, config.clone())?);
+
+        let flush_writer_handle = spawn_flush_writer(
+            flush_writer,
+            rx,
+            fptree_manager.clone(),
+            sstable_manager.clone(),
+        );
         info!("Amphis has started: table {}", name);
         Ok(KVS {
-            fptree_manager: Arc::new(FPTreeManager::new(name, config.clone())?),
-            sstable_manager: Arc::new(sstable_manager),
-            flush_writer: Arc::new(RwLock::new(flush_writer)),
+            fptree_manager,
+            sstable_manager,
+            flush_writer_handle,
+            sender: tx,
         })
     }
 
@@ -51,14 +68,8 @@ impl KVS {
 
         self.fptree_manager.put(key, value)?;
 
-        // TODO: make a flush process async
         if self.fptree_manager.need_flush() {
-            if let Some(first_leaf) = self.fptree_manager.prepare_flush()? {
-                let (table_id, filter, index) =
-                    self.flush_writer.write().unwrap().flush(first_leaf)?;
-                self.sstable_manager.register(table_id, filter, index)?;
-                self.fptree_manager.swith_fptree()?;
-            }
+            let _ = self.sender.send(FlushSignal::TryFlush);
         }
 
         Ok(())
