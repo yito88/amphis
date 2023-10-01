@@ -7,6 +7,7 @@ const CONFIG_FILE: &str = "config.toml";
 pub struct Config {
     leaf_dir: String,
     table_dir: String,
+    root_split_threshold: usize,
     bloom_filter_items_count: usize,
     bloom_filter_fp_rate: f64,
 }
@@ -16,6 +17,7 @@ impl Default for Config {
         Self {
             leaf_dir: "data".to_owned(),
             table_dir: "data".to_owned(),
+            root_split_threshold: 6,
             bloom_filter_items_count: 8192,
             bloom_filter_fp_rate: 0.01,
         }
@@ -25,20 +27,6 @@ impl Default for Config {
 impl Config {
     pub fn new() -> Self {
         let mut config = config::Config::default();
-
-        config
-            .set_default("leaf_dir", "data")
-            .expect("cannot parse the key");
-        config
-            .set_default("table_dir", "data")
-            .expect("cannot parse the key");
-        config
-            .set_default("bloom_filter_items_count", 8192)
-            .expect("cannot parse the key");
-        config
-            .set_default("bloom_filter_fp_rate", 0.01)
-            .expect("cannot parse the key");
-
         if Path::new(CONFIG_FILE).exists() {
             config
                 .merge(config::File::with_name(CONFIG_FILE))
@@ -58,6 +46,9 @@ impl Config {
             .expect("cannot parse the key");
         config
             .set_default("table_dir", path_str)
+            .expect("cannot parse the key");
+        config
+            .set_default("root_split_threshold", 6)
             .expect("cannot parse the key");
         config
             .set_default("bloom_filter_items_count", 8192)
@@ -83,6 +74,10 @@ impl Config {
 
     pub fn get_table_file_path(&self, name: &str, id: usize) -> String {
         format!("{}/sstable-{}.amph", self.get_table_dir_path(name), id)
+    }
+
+    pub fn get_root_split_threshold(&self) -> usize {
+        self.root_split_threshold
     }
 
     pub fn get_filter_items_count(&self) -> usize {

@@ -133,11 +133,7 @@ fn concurrent_insert() {
                 match each.get(&key.as_bytes().to_vec()).unwrap() {
                     Some(value) => {
                         let actual = String::from_utf8(value.to_vec()).unwrap();
-
-                        match expected {
-                            _ if expected == actual => println!("Get result {}", actual),
-                            _ => panic!("expected: {}, actual: {}", expected, actual),
-                        }
+                        assert_eq!(actual, expected);
                     }
                     None => panic!("expected: {}, actual: None", expected),
                 };

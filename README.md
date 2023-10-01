@@ -32,3 +32,11 @@ An embedded key-value store
 - Others
   - [ ] Error handling
   - [ ] Backgound thread
+
+# Threshold for flushing
+Basically, the number of keys triggers flushing (Converting FPTree to SSTable) because the number of the root split times on the FPTree is the threshold.
+Where you insert K keys and the N split happens, the relation between K and N would be:
+```math
+8 \times (3^{n+1} + 1)
+```
+If you set the `root_split_threshold` to 6, flush would happen every 17,504 insertions.

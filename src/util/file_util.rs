@@ -8,15 +8,19 @@ pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
     let file = match OpenOptions::new()
         .read(true)
         .append(true)
-        .create(true)
+        .create(false)
         .open(&file_path)
     {
         Ok(f) => f,
         Err(e) => match e.kind() {
             ErrorKind::NotFound => {
-                let f = File::create(&file_path)?;
+                let f = OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .create(true)
+                    .open(&file_path)?;
                 f.sync_all()?;
-                warn!("a new file {} is created", file_path);
+                warn!("New file {} is created", file_path);
                 is_created = true;
                 f
             }

@@ -4,9 +4,6 @@ use std::sync::{Arc, RwLock};
 use crate::config::Config;
 use crate::fptree::{FPTree, Leaf};
 
-// TODO: parameterize
-const SPLIT_THRESHOLD: usize = 6;
-
 pub struct FPTreeManager {
     name: String,
     config: Config,
@@ -32,18 +29,16 @@ impl FPTreeManager {
     }
 
     pub fn need_flush(&self) -> bool {
-        let new_fptree = self.new_fptree_ptr.read().unwrap();
-        let count = match &*new_fptree {
-            Some(new) => new.read().unwrap().get_root_split_count(),
-            None => self
+        // Flush has been already started when the new FPTree exists
+        self.new_fptree_ptr.read().unwrap().is_none()
+            && self
                 .fptree_ptr
                 .read()
                 .unwrap()
                 .read()
                 .unwrap()
-                .get_root_split_count(),
-        };
-        count > SPLIT_THRESHOLD
+                .get_root_split_count()
+                >= self.config.get_root_split_threshold()
     }
 
     pub fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
@@ -88,6 +83,7 @@ impl FPTreeManager {
         }
     }
 
+    /// Check the triggered flush before starting flush and set the new FPTree
     pub fn prepare_flush(&self) -> Result<Option<Arc<RwLock<Leaf>>>, std::io::Error> {
         let locked_fptree_id = self.fptree_id.write().unwrap();
 
@@ -137,7 +133,7 @@ impl FPTreeManager {
                 *locked_new = None;
                 *locked_fptree_id += 1;
             }
-            None => panic!("no new FPTree after a flush"),
+            None => unreachable!("No new FPTree when flushing"),
         }
 
         info!("completed flushing FPTree {}", *locked_fptree_id - 1);

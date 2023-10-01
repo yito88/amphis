@@ -1,4 +1,5 @@
 leaf_dir = 'data'
 table_dir = 'data'
+root_split_threshold = 4
 bloom_filter_items_count = 8192
 bloom_filter_fp_rate = 0.01

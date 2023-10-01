@@ -1,4 +1,4 @@
-use log::{debug, trace};
+use log::trace;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::sync::{Arc, RwLock};
@@ -144,7 +144,7 @@ impl Node for Leaf {
         self.next = Some(Arc::new(RwLock::new(new_leaf)));
 
         trace!("split existing leaf: {}", self);
-        debug!("split_key: {:?}", split_key.clone());
+        trace!("split_key: {:?}", split_key.clone());
 
         Ok(split_key)
     }

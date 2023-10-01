@@ -30,7 +30,6 @@ impl KVS {
         if Path::new(&path).exists() {
             // flush the exsting trees
             for entry in std::fs::read_dir(path)? {
-                println!("DEBUG: {:?}", entry);
                 if let Some(fptree_id) = file_util::get_tree_id(&entry?.path()) {
                     debug!("found FPTree ID: {}", fptree_id);
                     let (table_id, filter, index) =

@@ -1,5 +1,5 @@
 use bloomfilter::Bloom;
-use log::debug;
+use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -80,15 +80,16 @@ impl SstableManager {
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
         for (table_id, filter) in self.filters.read().unwrap().iter().rev() {
-            debug!(
+            trace!(
                 "Check the bloom filter of SSTable {} with {:?}",
-                table_id, key
+                table_id,
+                key
             );
             if !filter.check(key) {
                 continue;
             }
 
-            debug!("Read from SSTable {} with {:?}", table_id, key);
+            trace!("Read from SSTable {} with {:?}", table_id, key);
             let indexes = self.indexes.read().unwrap();
             let index = indexes.get(&table_id).unwrap();
             let offset = index.get(key);
