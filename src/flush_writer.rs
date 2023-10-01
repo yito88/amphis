@@ -67,6 +67,10 @@ impl FlushWriter {
         &mut self,
         first_leaf: Arc<RwLock<Leaf>>,
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
+        debug!(
+            "Starting flush: table {}, table ID {}",
+            self.name, self.table_id
+        );
         let leaf_manager = first_leaf.read().unwrap().get_leaf_manager();
         let id_list = leaf_manager.read().unwrap().get_leaf_id_chain();
         debug!("leaf ID list: {:?}", id_list);

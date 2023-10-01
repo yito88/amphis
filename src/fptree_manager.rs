@@ -49,7 +49,7 @@ impl FPTreeManager {
     pub fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
         let locked_new = self.new_fptree_ptr.read().unwrap();
         match &*locked_new {
-            Some(n) => n.read().unwrap().put(key, value)?,
+            Some(n) => n.read().unwrap().put(key, value),
             None => {
                 let _written = self.fptree_written.clone();
                 self.fptree_ptr
@@ -57,11 +57,9 @@ impl FPTreeManager {
                     .unwrap()
                     .read()
                     .unwrap()
-                    .put(key, value)?
+                    .put(key, value)
             }
         }
-
-        Ok(())
     }
 
     pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
@@ -81,11 +79,13 @@ impl FPTreeManager {
 
     pub fn delete(&self, key: &Vec<u8>) -> Result<(), std::io::Error> {
         let locked_new = self.new_fptree_ptr.read().unwrap();
-        if let Some(n) = &*locked_new {
-            n.read().unwrap().delete(key)?;
+        match &*locked_new {
+            Some(n) => n.read().unwrap().delete(key),
+            None => {
+                let _written = self.fptree_written.clone();
+                self.fptree_ptr.read().unwrap().read().unwrap().delete(key)
+            }
         }
-        let _written = self.fptree_written.clone();
-        self.fptree_ptr.read().unwrap().read().unwrap().delete(key)
     }
 
     pub fn prepare_flush(&self) -> Result<Option<Arc<RwLock<Leaf>>>, std::io::Error> {
