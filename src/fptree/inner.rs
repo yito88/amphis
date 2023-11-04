@@ -65,7 +65,7 @@ impl Node for Inner {
         let child = self.get_child(key).unwrap();
         let new_child = child.read().unwrap().get_next().unwrap();
 
-        match self.keys.binary_search(&inserted_key) {
+        match self.keys.binary_search(inserted_key) {
             Ok(_) => panic!("should not reach here"),
             Err(i) => {
                 self.keys.insert(i, inserted_key.clone());
@@ -97,11 +97,11 @@ impl Node for Inner {
         let new_children = self.children.split_off((FANOUT + 1) / 2 + 1);
 
         let mut new_inner = Inner::new();
-        for i in 1..new_keys.len() {
-            new_inner.add_key(&new_keys[i]);
+        for new_key in new_keys.into_iter().skip(1) {
+            new_inner.add_key(new_key);
         }
-        for i in 0..new_children.len() {
-            new_inner.add_child(new_children[i].clone());
+        for new_child in new_children {
+            new_inner.add_child(new_child.clone());
         }
         if let Some(next) = self.get_next() {
             new_inner.next = Some(next.clone());
@@ -134,8 +134,8 @@ impl Inner {
         self.keys.len() > FANOUT
     }
 
-    pub fn add_key(&mut self, key: &Vec<u8>) {
-        self.keys.push(key.clone());
+    pub fn add_key(&mut self, key: Vec<u8>) {
+        self.keys.push(key);
     }
 
     pub fn add_child(&mut self, child: Arc<RwLock<dyn Node + Send + Sync>>) {
@@ -211,15 +211,15 @@ mod tests {
     #[test]
     fn test_get_child() {
         let mut inner = Inner::new();
-        inner.add_key(&vec![10 as u8]);
+        inner.add_key(vec![10 as u8]);
 
         let mut new_child1 = Inner::new();
-        new_child1.add_key(&vec![1 as u8]);
+        new_child1.add_key(vec![1 as u8]);
         let arc_new_child1: Arc<RwLock<dyn Node + Send + Sync>> = Arc::new(RwLock::new(new_child1));
         inner.add_child(arc_new_child1.clone());
 
         let mut new_child2 = Inner::new();
-        new_child2.add_key(&vec![11 as u8]);
+        new_child2.add_key(vec![11 as u8]);
         let arc_new_child2: Arc<RwLock<dyn Node + Send + Sync>> = Arc::new(RwLock::new(new_child2));
         inner.add_child(arc_new_child2.clone());
 
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(inner.need_split(), false);
 
         for i in 0..(FANOUT + 1) {
-            inner.add_key(&vec![i as u8]);
+            inner.add_key(vec![i as u8]);
         }
         assert_eq!(inner.need_split(), true);
     }

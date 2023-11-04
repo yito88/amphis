@@ -32,9 +32,8 @@ pub struct LeafManager {
 impl LeafManager {
     pub fn new(name: &str, id: usize, config: &Config) -> Result<Self, std::io::Error> {
         let data_dir = config.get_leaf_dir_path(name);
-        match std::fs::create_dir_all(&data_dir) {
-            Ok(_) => (),
-            Err(e) => panic!("{} - {}", &data_dir, e),
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            unreachable!("Creating {} failed: {}", data_dir, e);
         }
 
         let file_path = config.get_leaf_file_path(name, id);
@@ -46,7 +45,7 @@ impl LeafManager {
         };
 
         if !is_created {
-            debug!("recovering headers for FPTree {}", id);
+            debug!("Recovering headers for FPTree {}", id);
             manager.recover_state()?;
         }
 
@@ -145,9 +144,7 @@ impl LeafManager {
         };
         encoded.extend(&data_util::calc_crc(&encoded).to_le_bytes());
         mmap.copy_from_slice(&encoded);
-        mmap.flush()?;
-
-        Ok(())
+        mmap.flush()
     }
 
     pub fn read_data(
@@ -228,6 +225,7 @@ impl LeafManager {
             // validate the header
             let magic = u32::from_le_bytes(mmap[0..LEN_HEADER_MAGIC].try_into().unwrap());
             if magic != HEADER_MAGIC {
+                warn!("Header magic was not found");
                 self.free_leaves.push_back(id);
                 continue;
             }

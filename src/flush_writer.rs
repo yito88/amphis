@@ -1,6 +1,6 @@
 use bloomfilter::Bloom;
 use crossbeam_channel::Receiver;
-use log::debug;
+use log::{debug, trace};
 use mockall_double::double;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -23,6 +23,7 @@ const WRITE_BUFFER_SIZE: usize = 1 << 18;
 #[derive(Debug, Clone)]
 pub enum FlushSignal {
     TryFlush,
+    Shutdown,
 }
 
 pub fn spawn_flush_writer(
@@ -42,6 +43,7 @@ pub fn spawn_flush_writer(
                         fptree_manager.switch_fptree().unwrap();
                     }
                 }
+                FlushSignal::Shutdown => break,
             }
         }
     })
@@ -68,12 +70,12 @@ impl FlushWriter {
         first_leaf: Arc<RwLock<Leaf>>,
     ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
         debug!(
-            "Starting flush: table {}, table ID {}",
+            "Starting flush FPTree of {} to SSTable ID {}",
             self.name, self.table_id
         );
         let leaf_manager = first_leaf.read().unwrap().get_leaf_manager();
         let id_list = leaf_manager.read().unwrap().get_leaf_id_chain();
-        debug!("leaf ID list: {:?}", id_list);
+        trace!("leaf ID list: {:?}", id_list);
 
         self.flush_kv(leaf_manager, id_list)
     }
@@ -94,7 +96,7 @@ impl FlushWriter {
     fn create_new_table(&mut self) -> Result<(usize, File), std::io::Error> {
         let id = self.table_id;
         let table_file_path = self.config.get_table_file_path(&self.name, id);
-        let table_file = File::create(&table_file_path)?;
+        let table_file = File::create(table_file_path)?;
 
         // odd ID used by compactions
         self.table_id += 2;

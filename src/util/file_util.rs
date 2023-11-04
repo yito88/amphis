@@ -1,7 +1,8 @@
-use log::warn;
+use log::info;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::Path;
+use std::str::FromStr;
 
 pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
     let mut is_created = false;
@@ -20,7 +21,7 @@ pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
                     .create(true)
                     .open(&file_path)?;
                 f.sync_all()?;
-                warn!("New file {} is created", file_path);
+                info!("New file {} is created", file_path);
                 is_created = true;
                 f
             }
@@ -40,14 +41,10 @@ pub fn get_tree_id(path: &Path) -> Option<usize> {
 }
 
 fn get_id(path: &Path, prefix: &str) -> Option<usize> {
-    match path.file_stem().expect("cannot get the file name").to_str() {
-        Some(file) if file.starts_with(prefix) => match file.strip_prefix(prefix) {
-            Some(id_str) => match id_str.parse::<usize>() {
-                Ok(id) => return Some(id),
-                Err(_) => return None,
-            },
-            None => None,
-        },
-        _ => None,
-    }
+    let file = path
+        .file_stem()
+        .expect("cannot get the file name")
+        .to_str()?;
+    file.strip_prefix(prefix)
+        .and_then(|id| usize::from_str(id).ok())
 }

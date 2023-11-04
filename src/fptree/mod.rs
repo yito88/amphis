@@ -52,7 +52,7 @@ impl FPTree {
 
     fn split_root(
         &self,
-        key: &Vec<u8>,
+        key: Vec<u8>,
         mut locked_root: RwLockWriteGuard<Arc<RwLock<dyn Node + Send + Sync>>>,
         locked_new_child: Arc<RwLock<dyn Node + Send + Sync>>,
     ) {
@@ -107,7 +107,7 @@ impl FPTree {
                     if locked_node.is_root() {
                         locked_node.set_root(false);
                         let new_child = locked_node.get_next().unwrap();
-                        self.split_root(&inserted, locked_root, new_child);
+                        self.split_root(inserted, locked_root, new_child);
                         return Ok(());
                     }
                 } else {

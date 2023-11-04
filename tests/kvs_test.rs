@@ -95,8 +95,8 @@ fn test_recovery() {
 #[test]
 fn concurrent_insert() {
     let _ = env_logger::builder().is_test(true).try_init();
-    const NUM_INSERTION: usize = 1025;
-    const NUM_THREADS: usize = 4;
+    const NUM_INSERTION: usize = 2345;
+    const NUM_THREADS: usize = 8;
     const TABLE_NAME: &str = "concurrency_test";
     let config = Config::new();
     let kvs = Arc::new(amphis::kvs::KVS::new(TABLE_NAME, config).expect("failed to start Amphis"));

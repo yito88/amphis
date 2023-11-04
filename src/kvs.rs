@@ -1,5 +1,5 @@
 use crossbeam_channel::Sender;
-use log::{debug, info, trace};
+use log::{debug, error, info, trace};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -14,7 +14,7 @@ use crate::util::file_util;
 pub struct KVS {
     fptree_manager: Arc<FPTreeManager>,
     sstable_manager: Arc<SstableManager>,
-    flush_writer_handle: JoinHandle<()>,
+    flush_writer_handle: Option<JoinHandle<()>>,
     sender: Sender<FlushSignal>,
 }
 
@@ -49,11 +49,11 @@ impl KVS {
             fptree_manager.clone(),
             sstable_manager.clone(),
         );
-        info!("Amphis has started: table {}", name);
+        info!("Amphis KVS has started: table {}", name);
         Ok(KVS {
             fptree_manager,
             sstable_manager,
-            flush_writer_handle,
+            flush_writer_handle: Some(flush_writer_handle),
             sender: tx,
         })
     }
@@ -105,5 +105,18 @@ impl KVS {
         );
 
         self.fptree_manager.delete(key)
+    }
+}
+
+impl Drop for KVS {
+    fn drop(&mut self) {
+        info!("Wait for the flushing for shutting down...");
+        let _ = self.sender.send(FlushSignal::Shutdown);
+        if let Some(handle) = self.flush_writer_handle.take() {
+            if let Err(e) = handle.join() {
+                error!("FlushWrite failed to shut down: {e:?}");
+            }
+        }
+        info!("Shutdown gracefully");
     }
 }

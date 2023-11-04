@@ -124,19 +124,18 @@ impl FPTreeManager {
         let mut locked_new = self.new_fptree_ptr.write().unwrap();
         match &*locked_new {
             Some(n) => {
-                let leaf_file = self
-                    .config
-                    .get_leaf_file_path(&self.name, *locked_fptree_id);
-                std::fs::remove_file(leaf_file)?;
-
                 *self.fptree_ptr.write().unwrap() = n.clone();
-                *locked_new = None;
+                let deleted_id = *locked_fptree_id;
                 *locked_fptree_id += 1;
+                *locked_new = None;
+
+                let leaf_file = self.config.get_leaf_file_path(&self.name, deleted_id);
+                std::fs::remove_file(leaf_file)?;
             }
             None => unreachable!("No new FPTree when flushing"),
         }
 
-        info!("completed flushing FPTree {}", *locked_fptree_id - 1);
+        info!("Completed flushing FPTree {}", *locked_fptree_id - 1);
 
         Ok(())
     }
