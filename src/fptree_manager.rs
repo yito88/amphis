@@ -41,7 +41,7 @@ impl FPTreeManager {
                 >= self.config.get_root_split_threshold()
     }
 
-    pub fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), std::io::Error> {
         let locked_new = self.new_fptree_ptr.read().unwrap();
         match &*locked_new {
             Some(n) => n.read().unwrap().put(key, value),
@@ -57,7 +57,7 @@ impl FPTreeManager {
         }
     }
 
-    pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
         let mut result = None;
         // TODO: concurrenct read
         let locked_new = self.new_fptree_ptr.read().unwrap();
@@ -72,7 +72,7 @@ impl FPTreeManager {
         Ok(result)
     }
 
-    pub fn delete(&self, key: &Vec<u8>) -> Result<(), std::io::Error> {
+    pub fn delete(&self, key: &[u8]) -> Result<(), std::io::Error> {
         let locked_new = self.new_fptree_ptr.read().unwrap();
         match &*locked_new {
             Some(n) => n.read().unwrap().delete(key),
@@ -93,7 +93,7 @@ impl FPTreeManager {
         }
 
         let mut locked_new = self.new_fptree_ptr.write().unwrap();
-        if let Some(_) = &*locked_new {
+        if (*locked_new).is_some() {
             // The flush is in progress
             return Ok(None);
         }

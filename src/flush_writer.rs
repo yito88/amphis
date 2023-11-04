@@ -139,11 +139,10 @@ impl FlushWriter {
             // it is enough to sort only kv_pairs since all leaves are ordered
             kv_pairs.sort();
             for (key, value) in kv_pairs {
-                writer.write(&data_util::format_data_with_crc(&key, &value))?;
                 filter.set(&key);
                 index.insert(&key, offset);
-
                 offset += data_util::get_data_size(key.len(), value.len());
+                writer.write_all(&data_util::format_data_with_crc(&key, &value))?;
             }
         }
         table_file.sync_all()?;

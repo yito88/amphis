@@ -39,9 +39,9 @@ impl Node for Inner {
         }
     }
 
-    fn get_child(&self, key: &Vec<u8>) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
+    fn get_child(&self, key: &[u8]) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
         trace!("check an inner - {} by key {:?}", self, key);
-        let child_idx = match self.keys.binary_search(key) {
+        let child_idx = match self.keys.binary_search(&key.to_vec()) {
             Ok(i) => i + 1,
             Err(i) => i,
         };
@@ -58,17 +58,17 @@ impl Node for Inner {
 
     fn insert(
         &mut self,
-        key: &Vec<u8>,
-        inserted_key: &Vec<u8>,
+        key: &[u8],
+        inserted_key: &[u8],
     ) -> Result<Option<Vec<u8>>, std::io::Error> {
         let mut ret: Option<Vec<u8>> = None;
         let child = self.get_child(key).unwrap();
         let new_child = child.read().unwrap().get_next().unwrap();
 
-        match self.keys.binary_search(inserted_key) {
+        match self.keys.binary_search(&inserted_key.to_vec()) {
             Ok(_) => panic!("should not reach here"),
             Err(i) => {
-                self.keys.insert(i, inserted_key.clone());
+                self.keys.insert(i, inserted_key.to_vec());
                 if i + 1 >= self.children.len() {
                     self.children.push(new_child.clone());
                 } else {
@@ -84,7 +84,7 @@ impl Node for Inner {
         Ok(ret)
     }
 
-    fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
         match self.get_child(key) {
             Some(c) => c.read().unwrap().get(key),
             None => Ok(None),
@@ -162,20 +162,20 @@ mod tests {
         fn get_next(&self) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
             Some(Arc::new(RwLock::new(MockLeaf { val: 0 })))
         }
-        fn get_child(&self, _key: &Vec<u8>) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
+        fn get_child(&self, _key: &[u8]) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
             None
         }
         fn insert(
             &mut self,
-            _key: &Vec<u8>,
-            _value: &Vec<u8>,
+            _key: &[u8],
+            _value: &[u8],
         ) -> Result<Option<Vec<u8>>, std::io::Error> {
             Ok(None)
         }
         fn may_need_split(&self) -> bool {
             false
         }
-        fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
             if *key == "key".as_bytes().to_vec() {
                 Ok(Some(format!("value{}", self.val).as_bytes().to_vec()))
             } else {

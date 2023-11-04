@@ -85,7 +85,7 @@ impl LeafManager {
                 .expect("the appended header doesn't exist");
         }
         last_header.set_ext(new_id);
-        self.commit_header(last_id, &&last_header)?;
+        self.commit_header(last_id, &last_header)?;
 
         Ok(new_id)
     }
@@ -181,8 +181,8 @@ impl LeafManager {
         &self,
         id: usize,
         offset: usize,
-        key: &Vec<u8>,
-        value: &Vec<u8>,
+        key: &[u8],
+        value: &[u8],
     ) -> Result<Option<usize>, std::io::Error> {
         let data_size = data_util::get_data_size(key.len(), value.len());
         let aligned_tail = offset + data_util::round_up_size(data_size);
@@ -197,7 +197,7 @@ impl LeafManager {
                 .map_mut(&self.leaves_file)?
         };
 
-        let data = data_util::format_data_with_crc(&key, &value);
+        let data = data_util::format_data_with_crc(key, value);
         mmap.copy_from_slice(&data);
         mmap.flush()?;
 

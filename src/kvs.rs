@@ -58,11 +58,11 @@ impl KVS {
         })
     }
 
-    pub fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), std::io::Error> {
         trace!(
             "Put K: {}, V: {}",
-            String::from_utf8(key.clone()).unwrap(),
-            String::from_utf8(value.clone()).unwrap()
+            String::from_utf8(key.to_vec()).unwrap(),
+            String::from_utf8(value.to_vec()).unwrap()
         );
 
         self.fptree_manager.put(key, value)?;
@@ -74,10 +74,10 @@ impl KVS {
         Ok(())
     }
 
-    pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
         trace!(
             "Getting from K: {}",
-            String::from_utf8(key.clone()).unwrap()
+            String::from_utf8(key.to_vec()).unwrap()
         );
 
         // TODO: concurrenct read
@@ -98,10 +98,10 @@ impl KVS {
         }
     }
 
-    pub fn delete(&self, key: &Vec<u8>) -> Result<(), std::io::Error> {
+    pub fn delete(&self, key: &[u8]) -> Result<(), std::io::Error> {
         trace!(
             "Deleting from K: {}",
-            String::from_utf8(key.clone()).unwrap()
+            String::from_utf8(key.to_vec()).unwrap()
         );
 
         self.fptree_manager.delete(key)

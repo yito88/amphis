@@ -32,6 +32,8 @@ struct BloomElements {
     bitmap: Vec<u8>,
 }
 
+type TableInfo = (usize, Bloom<Vec<u8>>);
+
 impl SstableManager {
     pub fn new(name: &str, config: Config) -> Result<(Self, usize), std::io::Error> {
         let path = config.get_table_dir_path(name);
@@ -78,20 +80,20 @@ impl SstableManager {
         Ok(())
     }
 
-    pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
         for (table_id, filter) in self.filters.read().unwrap().iter().rev() {
             trace!(
                 "Check the bloom filter of SSTable {} with {:?}",
                 table_id,
                 key
             );
-            if !filter.check(key) {
+            if !filter.check(&key.to_vec()) {
                 continue;
             }
 
             trace!("Read from SSTable {} with {:?}", table_id, key);
             let indexes = self.indexes.read().unwrap();
-            let index = indexes.get(&table_id).unwrap();
+            let index = indexes.get(table_id).unwrap();
             let offset = index.get(key);
             match self.get_from_table(key, *table_id, offset)? {
                 Some(r) => return Ok(Some(r)),
@@ -104,7 +106,7 @@ impl SstableManager {
 
     fn get_from_table(
         &self,
-        key: &Vec<u8>,
+        key: &[u8],
         table_id: usize,
         offset: usize,
     ) -> Result<Option<Vec<u8>>, std::io::Error> {
@@ -114,11 +116,10 @@ impl SstableManager {
         reader.seek(SeekFrom::Start(offset as u64))?;
 
         loop {
-            let cur_key;
-            match self.read_data(&mut reader)? {
-                Some(k) => cur_key = k,
+            let cur_key = match self.read_data(&mut reader)? {
+                Some(k) => k,
                 None => return Ok(None),
-            }
+            };
             let value = self.read_data(&mut reader)?;
 
             if cur_key == *key {
@@ -136,10 +137,10 @@ impl SstableManager {
         let size = u32::from_le_bytes(size_buf) as usize;
 
         let mut data = vec![0_u8; size];
-        reader.read(&mut data)?;
+        reader.read_exact(&mut data)?;
 
         let mut crc_buf = [0_u8; data_util::LEN_CRC];
-        reader.read(&mut crc_buf)?;
+        reader.read_exact(&mut crc_buf)?;
         let crc = u32::from_le_bytes(crc_buf);
 
         data_util::check_crc(data.as_slice(), crc)?;
@@ -165,7 +166,7 @@ impl SstableManager {
         data.extend(&encoded);
         data.extend(&data_util::calc_crc(&encoded).to_le_bytes());
 
-        writer.write(&data)?;
+        writer.write_all(&data)?;
 
         Ok(())
     }
@@ -185,7 +186,7 @@ impl SstableManager {
     fn read_filter(
         &self,
         reader: &mut BufReader<File>,
-    ) -> Result<Option<(usize, Bloom<Vec<u8>>)>, std::io::Error> {
+    ) -> Result<Option<TableInfo>, std::io::Error> {
         let mut size_buf = [0_u8; data_util::LEN_SIZE];
         let len = reader.read(&mut size_buf)?;
         if len == 0 {
@@ -194,10 +195,10 @@ impl SstableManager {
         let size = u32::from_le_bytes(size_buf) as usize;
 
         let mut data = vec![0_u8; size];
-        reader.read(&mut data)?;
+        reader.read_exact(&mut data)?;
 
         let mut crc_buf = [0_u8; data_util::LEN_CRC];
-        reader.read(&mut crc_buf)?;
+        reader.read_exact(&mut crc_buf)?;
         let crc = u32::from_le_bytes(crc_buf);
 
         data_util::check_crc(data.as_slice(), crc)?;
@@ -242,7 +243,7 @@ impl SstableManager {
         data.extend(&encoded);
         data.extend(&data_util::calc_crc(&encoded).to_le_bytes());
 
-        writer.write(&data)?;
+        writer.write_all(&data)?;
 
         Ok(())
     }
@@ -274,10 +275,10 @@ impl SstableManager {
         let size = u32::from_le_bytes(size_buf) as usize;
 
         let mut data = vec![0_u8; size];
-        reader.read(&mut data)?;
+        reader.read_exact(&mut data)?;
 
         let mut crc_buf = [0_u8; data_util::LEN_CRC];
-        reader.read(&mut crc_buf)?;
+        reader.read_exact(&mut crc_buf)?;
         let crc = u32::from_le_bytes(crc_buf);
 
         data_util::check_crc(data.as_slice(), crc)?;

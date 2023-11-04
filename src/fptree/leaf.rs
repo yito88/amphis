@@ -13,6 +13,8 @@ cfg_if::cfg_if! {
 use super::leaf_manager::{LeafHeader, INITIAL_TAIL_OFFSET, NUM_SLOT};
 use super::node::Node;
 
+type KvPair = (Vec<u8>, Vec<u8>, usize);
+
 pub struct Leaf {
     leaf_manager: Arc<RwLock<LeafManager>>,
     header: LeafHeader,
@@ -42,7 +44,7 @@ impl Node for Leaf {
         }
     }
 
-    fn get_child(&self, _key: &Vec<u8>) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
+    fn get_child(&self, _key: &[u8]) -> Option<Arc<RwLock<dyn Node + Send + Sync>>> {
         None
     }
 
@@ -50,11 +52,7 @@ impl Node for Leaf {
         self.header.need_split()
     }
 
-    fn insert(
-        &mut self,
-        key: &Vec<u8>,
-        value: &Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, std::io::Error> {
+    fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
         let mut ret: Option<Vec<u8>> = None;
 
         self.invalidate_data(key)?;
@@ -62,7 +60,7 @@ impl Node for Leaf {
         if self.header.need_split() {
             let split_key = self.split()?;
             let new_leaf = self.get_next().expect("no next leaf");
-            if split_key < *key {
+            if split_key.as_slice() < key {
                 self.commit()?;
 
                 // TODO: when the new leaf is split
@@ -100,7 +98,7 @@ impl Node for Leaf {
         Ok(ret)
     }
 
-    fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
         trace!("Read from Leaf: {}", self);
         for slot in self.get_existing_slots(key) {
             let (page_id, data_offset, key_size, value_size) = self.header.get_kv_info(slot);
@@ -175,8 +173,8 @@ impl Leaf {
         self.leaf_manager.clone()
     }
 
-    pub fn get_kv_pairs(&self) -> Result<Vec<(Vec<u8>, Vec<u8>, usize)>, std::io::Error> {
-        let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>, usize)> = Vec::with_capacity(NUM_SLOT);
+    pub fn get_kv_pairs(&self) -> Result<Vec<KvPair>, std::io::Error> {
+        let mut kv_pairs: Vec<KvPair> = Vec::with_capacity(NUM_SLOT);
 
         for slot in 0..NUM_SLOT {
             if self.header.is_slot_set(slot) {
@@ -195,7 +193,7 @@ impl Leaf {
         Ok(kv_pairs)
     }
 
-    fn calc_key_hash(&self, key: &Vec<u8>) -> u8 {
+    fn calc_key_hash(&self, key: &[u8]) -> u8 {
         let mut hasher = DefaultHasher::new();
         for b in key {
             hasher.write_u8(*b);
@@ -204,7 +202,7 @@ impl Leaf {
         hasher.finish() as u8
     }
 
-    fn get_existing_slots(&self, key: &Vec<u8>) -> Vec<usize> {
+    fn get_existing_slots(&self, key: &[u8]) -> Vec<usize> {
         let mut slots = Vec::new();
         let hash = self.calc_key_hash(key);
         for (slot, fp) in self.header.get_fingerprints().iter().enumerate() {
@@ -216,7 +214,7 @@ impl Leaf {
         slots
     }
 
-    fn invalidate_data(&mut self, key: &Vec<u8>) -> Result<(), std::io::Error> {
+    fn invalidate_data(&mut self, key: &[u8]) -> Result<(), std::io::Error> {
         for slot in self.get_existing_slots(key) {
             let (page_id, data_offset, key_size, value_size) = self.header.get_kv_info(slot);
             let (actual_key, _value) = self.leaf_manager.read().unwrap().read_data(
@@ -238,8 +236,8 @@ impl Leaf {
         &mut self,
         slot: usize,
         tail_offset: usize,
-        key: &Vec<u8>,
-        value: &Vec<u8>,
+        key: &[u8],
+        value: &[u8],
     ) {
         let offset = self.header.get_tail_offset();
         self.header.set_slot(slot);

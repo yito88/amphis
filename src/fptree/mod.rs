@@ -52,14 +52,14 @@ impl FPTree {
 
     fn split_root(
         &self,
-        key: Vec<u8>,
+        key: &[u8],
         mut locked_root: RwLockWriteGuard<Arc<RwLock<dyn Node + Send + Sync>>>,
         locked_new_child: Arc<RwLock<dyn Node + Send + Sync>>,
     ) {
         debug!("Root split: {:?}", key);
         let mut new_root = Inner::new();
         new_root.set_root(true);
-        new_root.add_key(key);
+        new_root.add_key(key.to_vec());
         new_root.add_child(locked_root.clone());
         new_root.add_child(locked_new_child.clone());
         *locked_root = Arc::new(RwLock::new(new_root));
@@ -68,7 +68,7 @@ impl FPTree {
         *count += 1;
     }
 
-    pub fn put(&self, key: &Vec<u8>, value: &Vec<u8>) -> Result<(), std::io::Error> {
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), std::io::Error> {
         // Lock the pointer to the root since it might be updated
         let locked_root = self.root_ptr.write().unwrap();
 
@@ -88,8 +88,7 @@ impl FPTree {
 
         let mut locked_nodes = Vec::new();
         let mut is_root_locked = true;
-        for i in 0..nodes.len() {
-            let locked_node = nodes[i].write().unwrap();
+        for locked_node in nodes.iter().map(|node| node.write().unwrap()) {
             if !locked_node.may_need_split() {
                 is_root_locked = false;
                 locked_nodes.clear();
@@ -99,15 +98,15 @@ impl FPTree {
         drop(lock);
 
         // Phase2: Insert split keys and a value
-        let mut inserted = value.clone();
+        let mut inserted = value.to_vec();
         if is_root_locked {
             while let Some(mut locked_node) = locked_nodes.pop() {
                 if let Some(split_key) = locked_node.insert(key, &inserted)? {
-                    inserted = split_key.clone();
+                    inserted = split_key;
                     if locked_node.is_root() {
                         locked_node.set_root(false);
                         let new_child = locked_node.get_next().unwrap();
-                        self.split_root(inserted, locked_root, new_child);
+                        self.split_root(&inserted, locked_root, new_child);
                         return Ok(());
                     }
                 } else {
@@ -128,7 +127,7 @@ impl FPTree {
         Ok(())
     }
 
-    pub fn get(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
         let mut node = self.root_ptr.read().unwrap().clone();
         loop {
             let n = node.clone();
@@ -141,7 +140,7 @@ impl FPTree {
         }
     }
 
-    pub fn delete(&self, key: &Vec<u8>) -> Result<(), std::io::Error> {
+    pub fn delete(&self, key: &[u8]) -> Result<(), std::io::Error> {
         // just add a tombstone
         self.put(key, &Vec::new())
     }

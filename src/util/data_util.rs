@@ -13,17 +13,19 @@ const LEN_REDUNDANCY: usize = LEN_SIZE + LEN_CRC;
  * | Size (4B) | Data | CRC (4B) |
  */
 
-pub fn format_data_with_crc(key: &Vec<u8>, value: &Vec<u8>) -> Vec<u8> {
+pub fn format_data_with_crc(key: &[u8], value: &[u8]) -> Vec<u8> {
     let data_size = get_data_size(key.len(), value.len());
     let mut data: Vec<u8> = Vec::with_capacity(data_size);
 
+    let crc = calc_crc(key).to_le_bytes();
     data.extend(&(key.len() as u32).to_le_bytes());
     data.extend(key);
-    data.extend(&calc_crc(key).to_le_bytes());
+    data.extend(crc);
 
+    let crc = calc_crc(value).to_le_bytes();
     data.extend(&(value.len() as u32).to_le_bytes());
     data.extend(value);
-    data.extend(&calc_crc(value).to_le_bytes());
+    data.extend(crc);
 
     data
 }
@@ -54,7 +56,7 @@ pub fn get_bound_offset(key_size: usize) -> usize {
     key_size + LEN_REDUNDANCY
 }
 
-pub fn calc_crc(data: &Vec<u8>) -> u32 {
+pub fn calc_crc(data: &[u8]) -> u32 {
     let mut digest = crc32::Digest::new(crc32::IEEE);
     digest.write(data);
 
@@ -62,7 +64,7 @@ pub fn calc_crc(data: &Vec<u8>) -> u32 {
 }
 
 pub fn check_crc(data: &[u8], crc: u32) -> Result<(), std::io::Error> {
-    if calc_crc(&data.to_vec()) == crc {
+    if calc_crc(data) == crc {
         Ok(())
     } else {
         // TODO: replace with an amphis error

@@ -10,7 +10,7 @@ pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
         .read(true)
         .append(true)
         .create(false)
-        .open(&file_path)
+        .open(file_path)
     {
         Ok(f) => f,
         Err(e) => match e.kind() {
@@ -19,7 +19,7 @@ pub fn open_file(file_path: &str) -> Result<(File, bool), std::io::Error> {
                     .read(true)
                     .append(true)
                     .create(true)
-                    .open(&file_path)?;
+                    .open(file_path)?;
                 f.sync_all()?;
                 info!("New file {} is created", file_path);
                 is_created = true;
