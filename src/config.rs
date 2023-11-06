@@ -5,21 +5,42 @@ const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
+    directories: Directories,
+    fp_tree: FpTree,
+    bloom_filter: BloomFilter,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Directories {
     leaf_dir: String,
     table_dir: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct FpTree {
     root_split_threshold: usize,
-    bloom_filter_items_count: usize,
-    bloom_filter_fp_rate: f64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BloomFilter {
+    items_count: usize,
+    fp_rate: f64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            leaf_dir: "data".to_owned(),
-            table_dir: "data".to_owned(),
-            root_split_threshold: 6,
-            bloom_filter_items_count: 8192,
-            bloom_filter_fp_rate: 0.01,
+            directories: Directories {
+                leaf_dir: "data".to_owned(),
+                table_dir: "data".to_owned(),
+            },
+            fp_tree: FpTree {
+                root_split_threshold: 6,
+            },
+            bloom_filter: BloomFilter {
+                items_count: 8192,
+                fp_rate: 0.01,
+            },
         }
     }
 }
@@ -42,30 +63,30 @@ impl Config {
         let mut config = config::Config::default();
 
         config
-            .set_default("leaf_dir", path_str)
+            .set_default("directories.leaf_dir", path_str)
             .expect("cannot parse the key");
         config
-            .set_default("table_dir", path_str)
+            .set_default("directories.table_dir", path_str)
             .expect("cannot parse the key");
         config
-            .set_default("root_split_threshold", 6)
+            .set_default("fp_tree.root_split_threshold", 6)
             .expect("cannot parse the key");
         config
-            .set_default("bloom_filter_items_count", 8192)
+            .set_default("bloom_filter.items_count", 8192)
             .expect("cannot parse the key");
         config
-            .set_default("bloom_filter_fp_rate", 0.01)
+            .set_default("bloom_filter.fp_rate", 0.01)
             .expect("cannot parse the key");
 
         config.try_into().expect("deserializing config failed")
     }
 
     pub fn get_leaf_dir_path(&self, name: &str) -> String {
-        format!("{}/{}", self.leaf_dir, name)
+        format!("{}/{}", self.directories.leaf_dir, name)
     }
 
     pub fn get_table_dir_path(&self, name: &str) -> String {
-        format!("{}/{}", self.table_dir, name)
+        format!("{}/{}", self.directories.table_dir, name)
     }
 
     pub fn get_leaf_file_path(&self, name: &str, id: usize) -> String {
@@ -77,15 +98,15 @@ impl Config {
     }
 
     pub fn get_root_split_threshold(&self) -> usize {
-        self.root_split_threshold
+        self.fp_tree.root_split_threshold
     }
 
     pub fn get_filter_items_count(&self) -> usize {
-        self.bloom_filter_items_count
+        self.bloom_filter.items_count
     }
 
     pub fn get_filter_fp_rate(&self) -> f64 {
-        self.bloom_filter_fp_rate
+        self.bloom_filter.fp_rate
     }
 
     pub fn get_filter_file_path(&self, name: &str) -> String {
@@ -104,9 +125,10 @@ mod tests {
     #[test]
     fn test_config() {
         let config = Config::new();
-        assert_eq!(config.leaf_dir, "data");
-        assert_eq!(config.table_dir, "data");
-        assert_eq!(config.bloom_filter_items_count, 8192);
-        assert_eq!(config.bloom_filter_fp_rate, 0.01);
+        assert_eq!(config.directories.leaf_dir, "data");
+        assert_eq!(config.directories.table_dir, "data");
+        assert_eq!(config.fp_tree.root_split_threshold, 4);
+        assert_eq!(config.bloom_filter.items_count, 8192);
+        assert_eq!(config.bloom_filter.fp_rate, 0.01);
     }
 }

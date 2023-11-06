@@ -1,5 +1,18 @@
+# Data directories:
+#   `leaf_dir`: The directory stores leaf files of FPTree
+#   `table_dir`: The directory stores sstable files
+[directories]
 leaf_dir = 'data'
 table_dir = 'data'
+
+# FPTree config:
+#   `root_split_threshold`: Flush the FPTree when a split occurs
+[fp_tree]
 root_split_threshold = 4
-bloom_filter_items_count = 8192
-bloom_filter_fp_rate = 0.01
+
+# Bloom Filter config:
+#   `items_count`: The maximum number of items in each bloom filter
+#   `fp_rate`: The expected rate of false positive in a bloom filter
+[bloom_filter]
+items_count = 8192
+fp_rate = 0.01
