@@ -170,6 +170,7 @@ impl SstableManager {
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
 
         while let Some(table_info) = self.read_table_info(&mut reader)? {
+            debug!("load table info for ID: {}", table_info.id);
             let mut tables = self.tables.write().unwrap();
             match tables.get_mut(table_info.level) {
                 Some(tables) => {
@@ -194,9 +195,12 @@ impl SstableManager {
         reader: &mut BufReader<File>,
     ) -> Result<Option<TableInfo>, std::io::Error> {
         match self.read_data(reader)? {
-            Some(bytes) => bincode::deserialize(&bytes).map_err(|_| {
-                std::io::Error::new(ErrorKind::Other, "failed to deserialize bloom elements")
-            }),
+            Some(bytes) => {
+                let table_info = bincode::deserialize(&bytes).map_err(|_| {
+                    std::io::Error::new(ErrorKind::Other, "failed to deserialize the table info")
+                })?;
+                Ok(Some(table_info))
+            }
             None => Ok(None),
         }
     }
