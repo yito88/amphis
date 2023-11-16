@@ -19,20 +19,19 @@ const READ_BUFFER_SIZE: usize = 1 << 16;
 pub struct SstableManager {
     name: String,
     config: Config,
-    filters: Arc<RwLock<BTreeMap<usize, Bloom<Vec<u8>>>>>,
-    indexes: Arc<RwLock<BTreeMap<usize, SparseIndex>>>,
+    tables: Arc<RwLock<Vec<BTreeMap<TableId, TableInfo>>>>,
 }
+
+pub type TableId = usize;
 
 #[derive(Serialize, Deserialize)]
-struct BloomElements {
-    table_id: usize,
-    bitmap_bits: u64,
-    k_num: u32,
-    sip_keys: [(u64, u64); 2],
-    bitmap: Vec<u8>,
+pub struct TableInfo {
+    pub id: TableId,
+    pub size: usize,
+    pub level: usize,
+    pub filter: Bloom<Vec<u8>>,
+    pub index: SparseIndex,
 }
-
-type TableInfo = (usize, Bloom<Vec<u8>>);
 
 impl SstableManager {
     pub fn new(name: &str, config: Config) -> Result<(Self, usize), std::io::Error> {
@@ -40,8 +39,7 @@ impl SstableManager {
         let manager = SstableManager {
             name: name.to_string(),
             config,
-            filters: Arc::new(RwLock::new(BTreeMap::new())),
-            indexes: Arc::new(RwLock::new(BTreeMap::new())),
+            tables: Arc::new(RwLock::new(Vec::new())),
         };
 
         // recovery the current state
@@ -57,47 +55,49 @@ impl SstableManager {
             }
             debug!("next table ID: {}", next_table_id);
 
-            // load the metadata
-            manager.load_filters()?;
-            manager.load_indexes()?;
+            manager.load_table_info()?;
         }
 
         Ok((manager, next_table_id))
     }
 
-    pub fn register(
-        &self,
-        table_id: usize,
-        filter: Bloom<Vec<u8>>,
-        index: SparseIndex,
-    ) -> Result<(), std::io::Error> {
-        self.write_filter(table_id, &filter)?;
-        self.write_index(&index)?;
+    pub fn register(&self, table_info: TableInfo) -> Result<(), std::io::Error> {
+        self.write_table_info(&table_info)?;
 
-        self.filters.write().unwrap().insert(table_id, filter);
-        self.indexes.write().unwrap().insert(table_id, index);
+        // Register the new table to Level 0
+        let mut tables = self.tables.write().unwrap();
+        match tables.get_mut(0) {
+            Some(level_zero) => {
+                level_zero.insert(table_info.id, table_info);
+            }
+            None => {
+                let mut level_zero = BTreeMap::new();
+                level_zero.insert(table_info.id, table_info);
+                tables.push(level_zero);
+            }
+        }
 
         Ok(())
     }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
-        for (table_id, filter) in self.filters.read().unwrap().iter().rev() {
-            trace!(
-                "Check the bloom filter of SSTable {} with {:?}",
-                table_id,
-                key
-            );
-            if !filter.check(&key.to_vec()) {
-                continue;
-            }
+        for leveled_tables in self.tables.read().unwrap().iter() {
+            for (table_id, table_info) in leveled_tables.iter().rev() {
+                trace!(
+                    "Check the bloom filter of SSTable {} with {:?}",
+                    table_id,
+                    key
+                );
+                if !table_info.filter.check(&key.to_vec()) {
+                    continue;
+                }
 
-            trace!("Read from SSTable {} with {:?}", table_id, key);
-            let indexes = self.indexes.read().unwrap();
-            let index = indexes.get(table_id).unwrap();
-            let offset = index.get(key);
-            match self.get_from_table(key, *table_id, offset)? {
-                Some(r) => return Ok(Some(r)),
-                None => continue,
+                trace!("Read from SSTable {} with {:?}", table_id, key);
+                let offset = table_info.index.get(key);
+                match self.get_from_table(key, *table_id, offset)? {
+                    Some(r) => return Ok(Some(r)),
+                    None => continue,
+                }
             }
         }
 
@@ -148,19 +148,12 @@ impl SstableManager {
         Ok(Some(data))
     }
 
-    fn write_filter(&self, table_id: usize, filter: &Bloom<Vec<u8>>) -> Result<(), std::io::Error> {
-        let file_path = self.config.get_filter_file_path(&self.name);
+    fn write_table_info(&self, table_info: &TableInfo) -> Result<(), std::io::Error> {
+        let file_path = self.config.get_metadata_path(&self.name);
         let (file, _) = file_util::open_file(&file_path)?;
         let mut writer = BufWriter::new(&file);
 
-        let elements = BloomElements {
-            table_id,
-            bitmap_bits: filter.number_of_bits(),
-            k_num: filter.number_of_hash_functions(),
-            sip_keys: filter.sip_keys(),
-            bitmap: filter.bitmap(),
-        };
-        let encoded = bincode::serialize(&elements).expect("serializing the filter failed");
+        let encoded = bincode::serialize(table_info).expect("serializing the table info failed");
         let mut data: Vec<u8> = Vec::new();
         data.extend(&(encoded.len() as u32).to_le_bytes());
         data.extend(&encoded);
@@ -171,128 +164,40 @@ impl SstableManager {
         Ok(())
     }
 
-    fn load_filters(&self) -> Result<(), std::io::Error> {
-        let file_path = self.config.get_filter_file_path(&self.name);
+    fn load_table_info(&self) -> Result<(), std::io::Error> {
+        let file_path = self.config.get_metadata_path(&self.name);
         let (file, _) = file_util::open_file(&file_path)?;
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
 
-        while let Some((id, filter)) = self.read_filter(&mut reader)? {
-            self.filters.write().unwrap().insert(id, filter);
+        while let Some(table_info) = self.read_table_info(&mut reader)? {
+            let mut tables = self.tables.write().unwrap();
+            match tables.get_mut(table_info.level) {
+                Some(tables) => {
+                    tables.insert(table_info.id, table_info);
+                }
+                None => {
+                    while tables.len() < table_info.level {
+                        tables.push(BTreeMap::new());
+                    }
+                    let mut leveled_tables = BTreeMap::new();
+                    leveled_tables.insert(table_info.id, table_info);
+                    tables.push(leveled_tables);
+                }
+            }
         }
 
         Ok(())
     }
 
-    fn read_filter(
+    fn read_table_info(
         &self,
         reader: &mut BufReader<File>,
     ) -> Result<Option<TableInfo>, std::io::Error> {
-        let mut size_buf = [0_u8; data_util::LEN_SIZE];
-        let len = reader.read(&mut size_buf)?;
-        if len == 0 {
-            return Ok(None);
+        match self.read_data(reader)? {
+            Some(bytes) => bincode::deserialize(&bytes).map_err(|_| {
+                std::io::Error::new(ErrorKind::Other, "failed to deserialize bloom elements")
+            }),
+            None => Ok(None),
         }
-        let size = u32::from_le_bytes(size_buf) as usize;
-
-        let mut data = vec![0_u8; size];
-        reader.read_exact(&mut data)?;
-
-        let mut crc_buf = [0_u8; data_util::LEN_CRC];
-        reader.read_exact(&mut crc_buf)?;
-        let crc = u32::from_le_bytes(crc_buf);
-
-        data_util::check_crc(data.as_slice(), crc)?;
-
-        let elements: BloomElements = match bincode::deserialize(&data) {
-            Ok(e) => e,
-            // TODO: replace with an amphis error
-            Err(_) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "failed to deserialize bloom elements",
-                ))
-            }
-        };
-        let filter = Bloom::from_existing(
-            &elements.bitmap,
-            elements.bitmap_bits,
-            elements.k_num,
-            elements.sip_keys,
-        );
-        Ok(Some((elements.table_id, filter)))
-    }
-
-    fn write_index(&self, index: &SparseIndex) -> Result<(), std::io::Error> {
-        let file_path = self.config.get_index_file_path(&self.name);
-        let (file, _) = file_util::open_file(&file_path)?;
-        let mut writer = BufWriter::new(&file);
-
-        let encoded = match bincode::serialize(&index) {
-            Ok(b) => b,
-            // TODO: replace with an amphis error
-            Err(_) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "failed to serialize a sparse index",
-                ))
-            }
-        };
-
-        let mut data: Vec<u8> = Vec::new();
-        data.extend(&(encoded.len() as u32).to_le_bytes());
-        data.extend(&encoded);
-        data.extend(&data_util::calc_crc(&encoded).to_le_bytes());
-
-        writer.write_all(&data)?;
-
-        Ok(())
-    }
-
-    fn load_indexes(&self) -> Result<(), std::io::Error> {
-        let file_path = self.config.get_index_file_path(&self.name);
-        let (file, _) = file_util::open_file(&file_path)?;
-        let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
-
-        while let Some(index) = self.read_index(&mut reader)? {
-            self.indexes
-                .write()
-                .unwrap()
-                .insert(index.get_table_id(), index);
-        }
-
-        Ok(())
-    }
-
-    fn read_index(
-        &self,
-        reader: &mut BufReader<File>,
-    ) -> Result<Option<SparseIndex>, std::io::Error> {
-        let mut size_buf = [0_u8; data_util::LEN_SIZE];
-        let len = reader.read(&mut size_buf)?;
-        if len == 0 {
-            return Ok(None);
-        }
-        let size = u32::from_le_bytes(size_buf) as usize;
-
-        let mut data = vec![0_u8; size];
-        reader.read_exact(&mut data)?;
-
-        let mut crc_buf = [0_u8; data_util::LEN_CRC];
-        reader.read_exact(&mut crc_buf)?;
-        let crc = u32::from_le_bytes(crc_buf);
-
-        data_util::check_crc(data.as_slice(), crc)?;
-
-        let index: SparseIndex = match bincode::deserialize(&data) {
-            Ok(i) => i,
-            // TODO: replace with an amphis error
-            Err(_) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "failed to deserialize a sparse index",
-                ))
-            }
-        };
-        Ok(Some(index))
     }
 }

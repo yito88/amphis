@@ -12,7 +12,7 @@ use crate::fptree::leaf_manager::NUM_SLOT;
 use crate::fptree::Leaf;
 use crate::fptree_manager::FPTreeManager;
 use crate::sparse_index::SparseIndex;
-use crate::sstable_manager::SstableManager;
+use crate::sstable_manager::{SstableManager, TableId, TableInfo};
 use crate::util::data_util;
 
 #[double]
@@ -38,8 +38,8 @@ pub fn spawn_flush_writer(
                 FlushSignal::TryFlush => {
                     // TODO: error handling
                     if let Some(first_leaf) = fptree_manager.prepare_flush().unwrap() {
-                        let (table_id, filter, index) = flush_writer.flush(first_leaf).unwrap();
-                        sstable_manager.register(table_id, filter, index).unwrap();
+                        let table_info = flush_writer.flush(first_leaf).unwrap();
+                        sstable_manager.register(table_info).unwrap();
                         fptree_manager.switch_fptree().unwrap();
                     }
                 }
@@ -52,7 +52,7 @@ pub fn spawn_flush_writer(
 pub struct FlushWriter {
     name: String,
     config: Config,
-    table_id: usize,
+    table_id: TableId,
 }
 
 impl FlushWriter {
@@ -65,10 +65,7 @@ impl FlushWriter {
     }
 
     /// flush the current tree
-    pub fn flush(
-        &mut self,
-        first_leaf: Arc<RwLock<Leaf>>,
-    ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
+    pub fn flush(&mut self, first_leaf: Arc<RwLock<Leaf>>) -> Result<TableInfo, std::io::Error> {
         debug!(
             "Starting flush FPTree of {} to SSTable ID {}",
             self.name, self.table_id
@@ -85,7 +82,7 @@ impl FlushWriter {
         &mut self,
         name: &str,
         fptree_id: usize,
-    ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
+    ) -> Result<TableInfo, std::io::Error> {
         let leaf_manager = LeafManager::new(name, fptree_id, &self.config)?;
         let id_list = leaf_manager.get_leaf_id_chain();
         debug!("leaf ID list: {:?}", id_list);
@@ -93,7 +90,7 @@ impl FlushWriter {
         self.flush_kv(Arc::new(RwLock::new(leaf_manager)), id_list)
     }
 
-    fn create_new_table(&mut self) -> Result<(usize, File), std::io::Error> {
+    fn create_new_table(&mut self) -> Result<(TableId, File), std::io::Error> {
         let id = self.table_id;
         let table_file_path = self.config.get_table_file_path(&self.name, id);
         let table_file = File::create(table_file_path)?;
@@ -108,10 +105,10 @@ impl FlushWriter {
         &mut self,
         leaf_manager: Arc<RwLock<LeafManager>>,
         id_list: Vec<usize>,
-    ) -> Result<(usize, Bloom<Vec<u8>>, SparseIndex), std::io::Error> {
+    ) -> Result<TableInfo, std::io::Error> {
         let mut offset = 0;
         let (table_id, table_file) = self.create_new_table()?;
-        let mut index = SparseIndex::new(table_id);
+        let mut index = SparseIndex::new();
         let mut filter = Bloom::new_for_fp_rate(
             self.config.get_filter_items_count(),
             self.config.get_filter_fp_rate(),
@@ -147,6 +144,12 @@ impl FlushWriter {
         }
         table_file.sync_all()?;
 
-        Ok((table_id, filter, index))
+        Ok(TableInfo {
+            id: table_id,
+            size: table_file.metadata()?.len() as _,
+            level: 0,
+            filter,
+            index,
+        })
     }
 }

@@ -6,22 +6,16 @@ const LEAST_OFFSET: usize = 1 << 18;
 
 #[derive(Serialize, Deserialize)]
 pub struct SparseIndex {
-    table_id: usize,
     prev_offset: usize,
     index: BTreeMap<Vec<u8>, usize>,
 }
 
 impl SparseIndex {
-    pub fn new(table_id: usize) -> Self {
+    pub fn new() -> Self {
         SparseIndex {
-            table_id,
             prev_offset: usize::MAX,
             index: BTreeMap::new(),
         }
-    }
-
-    pub fn get_table_id(&self) -> usize {
-        self.table_id
     }
 
     pub fn insert(&mut self, key: &[u8], offset: usize) {

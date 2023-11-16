@@ -32,9 +32,8 @@ impl KVS {
             for entry in std::fs::read_dir(path)? {
                 if let Some(fptree_id) = file_util::get_tree_id(&entry?.path()) {
                     debug!("found FPTree ID: {}", fptree_id);
-                    let (table_id, filter, index) =
-                        flush_writer.flush_with_file(name, fptree_id)?;
-                    sstable_manager.register(table_id, filter, index)?;
+                    let table_info = flush_writer.flush_with_file(name, fptree_id)?;
+                    sstable_manager.register(table_info)?;
                     let leaf_file = config.get_leaf_file_path(name, fptree_id);
                     std::fs::remove_file(leaf_file)?;
                 }

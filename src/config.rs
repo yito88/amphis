@@ -109,12 +109,8 @@ impl Config {
         self.bloom_filter.fp_rate
     }
 
-    pub fn get_filter_file_path(&self, name: &str) -> String {
-        format!("{}/filter.amph", self.get_table_dir_path(name))
-    }
-
-    pub fn get_index_file_path(&self, name: &str) -> String {
-        format!("{}/index.amph", self.get_table_dir_path(name))
+    pub fn get_metadata_path(&self, name: &str) -> String {
+        format!("{}/metadata.amph", self.get_table_dir_path(name))
     }
 }
 
