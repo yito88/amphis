@@ -6,6 +6,7 @@ An embedded key-value store
 # TODO
 - API
   - [x] get()
+  - [ ] scan()
   - [x] put()
     - including insert and update
   - [x] delete()

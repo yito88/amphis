@@ -1,7 +1,7 @@
 use crossbeam_channel::Sender;
 use log::{debug, error, info, trace};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 //use crate::amphis_error::CrudError;
@@ -26,7 +26,8 @@ impl KVS {
         let (sstable_manager, next_table_id) = SstableManager::new(name, config.clone())?;
         let sstable_manager = Arc::new(sstable_manager);
 
-        let mut flush_writer = FlushWriter::new(name, config.clone(), next_table_id);
+        let mut flush_writer =
+            FlushWriter::new(name, config.clone(), Arc::new(Mutex::new(next_table_id)));
         if Path::new(&path).exists() {
             // flush the exsting trees
             for entry in std::fs::read_dir(path)? {

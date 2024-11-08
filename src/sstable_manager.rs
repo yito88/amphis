@@ -1,13 +1,13 @@
-use bloomfilter::Bloom;
-use log::{debug, trace};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::ErrorKind;
-use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+
+use bloomfilter::Bloom;
+use log::{debug, trace};
+use serde::{Deserialize, Serialize};
 
 use super::sparse_index::SparseIndex;
 use crate::config::Config;
@@ -19,16 +19,21 @@ const READ_BUFFER_SIZE: usize = 1 << 16;
 pub struct SstableManager {
     name: String,
     config: Config,
-    tables: Arc<RwLock<Vec<BTreeMap<TableId, TableInfo>>>>,
+    leveled_tables: Arc<RwLock<LeveledTables>>,
 }
 
 pub type TableId = usize;
+pub type Tables = BTreeMap<TableId, TableInfo>;
+pub type LeveledTables = Vec<Tables>;
+/// A range consists of the head(small) key and the tail(large) key
+pub type KeyRange = (Vec<u8>, Vec<u8>);
 
 #[derive(Serialize, Deserialize)]
 pub struct TableInfo {
     pub id: TableId,
     pub size: usize,
     pub level: usize,
+    pub range: KeyRange,
     pub filter: Bloom<Vec<u8>>,
     pub index: SparseIndex,
 }
@@ -39,7 +44,7 @@ impl SstableManager {
         let manager = SstableManager {
             name: name.to_string(),
             config,
-            tables: Arc::new(RwLock::new(Vec::new())),
+            leveled_tables: Arc::new(RwLock::new(LeveledTables::new())),
         };
 
         // recovery the current state
@@ -65,7 +70,7 @@ impl SstableManager {
         self.write_table_info(&table_info)?;
 
         // Register the new table to Level 0
-        let mut tables = self.tables.write().unwrap();
+        let mut tables = self.leveled_tables.write().unwrap();
         match tables.get_mut(0) {
             Some(level_zero) => {
                 level_zero.insert(table_info.id, table_info);
@@ -81,8 +86,12 @@ impl SstableManager {
     }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, std::io::Error> {
-        for leveled_tables in self.tables.read().unwrap().iter() {
+        // TODO: add get() for other leveling
+        for leveled_tables in self.leveled_tables.read().unwrap().iter() {
             for (table_id, table_info) in leveled_tables.iter().rev() {
+                if key < &table_info.range.0 || key > &table_info.range.1 {
+                    continue;
+                }
                 trace!(
                     "Check the bloom filter of SSTable {} with {:?}",
                     table_id,
@@ -116,36 +125,16 @@ impl SstableManager {
         reader.seek(SeekFrom::Start(offset as u64))?;
 
         loop {
-            let cur_key = match self.read_data(&mut reader)? {
+            let cur_key = match read_data(&mut reader)? {
                 Some(k) => k,
                 None => return Ok(None),
             };
-            let value = self.read_data(&mut reader)?;
+            let value = read_data(&mut reader)?;
 
             if cur_key == *key {
                 return Ok(value);
             }
         }
-    }
-
-    fn read_data(&self, reader: &mut BufReader<File>) -> Result<Option<Vec<u8>>, std::io::Error> {
-        let mut size_buf = [0_u8; data_util::LEN_SIZE];
-        let len = reader.read(&mut size_buf)?;
-        if len == 0 {
-            return Ok(None);
-        }
-        let size = u32::from_le_bytes(size_buf) as usize;
-
-        let mut data = vec![0_u8; size];
-        reader.read_exact(&mut data)?;
-
-        let mut crc_buf = [0_u8; data_util::LEN_CRC];
-        reader.read_exact(&mut crc_buf)?;
-        let crc = u32::from_le_bytes(crc_buf);
-
-        data_util::check_crc(data.as_slice(), crc)?;
-
-        Ok(Some(data))
     }
 
     fn write_table_info(&self, table_info: &TableInfo) -> Result<(), std::io::Error> {
@@ -171,7 +160,7 @@ impl SstableManager {
 
         while let Some(table_info) = self.read_table_info(&mut reader)? {
             debug!("load table info for ID: {}", table_info.id);
-            let mut tables = self.tables.write().unwrap();
+            let mut tables = self.leveled_tables.write().unwrap();
             match tables.get_mut(table_info.level) {
                 Some(tables) => {
                     tables.insert(table_info.id, table_info);
@@ -194,7 +183,7 @@ impl SstableManager {
         &self,
         reader: &mut BufReader<File>,
     ) -> Result<Option<TableInfo>, std::io::Error> {
-        match self.read_data(reader)? {
+        match read_data(reader)? {
             Some(bytes) => {
                 let table_info = bincode::deserialize(&bytes).map_err(|_| {
                     std::io::Error::new(ErrorKind::Other, "failed to deserialize the table info")
@@ -204,4 +193,24 @@ impl SstableManager {
             None => Ok(None),
         }
     }
+}
+
+pub fn read_data(reader: &mut BufReader<File>) -> Result<Option<Vec<u8>>, std::io::Error> {
+    let mut size_buf = [0_u8; data_util::LEN_SIZE];
+    let len = reader.read(&mut size_buf)?;
+    if len == 0 {
+        return Ok(None);
+    }
+    let size = u32::from_le_bytes(size_buf) as usize;
+
+    let mut data = vec![0_u8; size];
+    reader.read_exact(&mut data)?;
+
+    let mut crc_buf = [0_u8; data_util::LEN_CRC];
+    reader.read_exact(&mut crc_buf)?;
+    let crc = u32::from_le_bytes(crc_buf);
+
+    data_util::check_crc(data.as_slice(), crc)?;
+
+    Ok(Some(data))
 }

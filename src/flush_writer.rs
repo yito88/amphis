@@ -4,7 +4,7 @@ use log::{debug, trace};
 use mockall_double::double;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 
 use crate::config::Config;
@@ -52,23 +52,23 @@ pub fn spawn_flush_writer(
 pub struct FlushWriter {
     name: String,
     config: Config,
-    table_id: TableId,
+    last_table_id: Arc<Mutex<TableId>>,
 }
 
 impl FlushWriter {
-    pub fn new(name: &str, config: Config, table_id: usize) -> Self {
+    pub fn new(name: &str, config: Config, last_table_id: Arc<Mutex<TableId>>) -> Self {
         FlushWriter {
             name: name.to_string(),
             config,
-            table_id,
+            last_table_id,
         }
     }
 
     /// flush the current tree
     pub fn flush(&mut self, first_leaf: Arc<RwLock<Leaf>>) -> Result<TableInfo, std::io::Error> {
         debug!(
-            "Starting flush FPTree of {} to SSTable ID {}",
-            self.name, self.table_id
+            "Starting flush FPTree of {} to SSTable ID {:?}",
+            self.name, self.last_table_id
         );
         let leaf_manager = first_leaf.read().unwrap().get_leaf_manager();
         let id_list = leaf_manager.read().unwrap().get_leaf_id_chain();
@@ -91,14 +91,14 @@ impl FlushWriter {
     }
 
     fn create_new_table(&mut self) -> Result<(TableId, File), std::io::Error> {
-        let id = self.table_id;
-        let table_file_path = self.config.get_table_file_path(&self.name, id);
+        let mut id = self.last_table_id.lock().unwrap();
+        let table_file_path = self.config.get_table_file_path(&self.name, *id);
         let table_file = File::create(table_file_path)?;
 
         // odd ID used by compactions
-        self.table_id += 2;
+        *id += 2;
 
-        Ok((id, table_file))
+        Ok((*id, table_file))
     }
 
     fn flush_kv(
@@ -113,12 +113,14 @@ impl FlushWriter {
             self.config.get_filter_items_count(),
             self.config.get_filter_fp_rate(),
         );
+        let mut head_key = None;
+        let mut tail_key = None;
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER_SIZE, &table_file);
-        for id in id_list {
+        for id in &id_list {
             let header = leaf_manager
                 .read()
                 .unwrap()
-                .get_header(id)
+                .get_header(*id)
                 .expect("The header doesn't exist");
             let mut kv_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(NUM_SLOT);
             for slot in 0..NUM_SLOT {
@@ -135,6 +137,16 @@ impl FlushWriter {
             }
             // it is enough to sort only kv_pairs since all leaves are ordered
             kv_pairs.sort();
+
+            if !kv_pairs.is_empty() {
+                if id == id_list.first().expect("The list shouldn't be empty") {
+                    head_key = kv_pairs.first().map(|(k, _)| k.clone());
+                }
+                if id == id_list.last().expect("The list shouldn't be empty") {
+                    tail_key = kv_pairs.last().map(|(k, _)| k.clone());
+                }
+            }
+
             for (key, value) in kv_pairs {
                 filter.set(&key);
                 index.insert(&key, offset);
@@ -144,10 +156,15 @@ impl FlushWriter {
         }
         table_file.sync_all()?;
 
+        let range = (
+            head_key.expect("Head key should exist"),
+            tail_key.expect("Tail key should exist"),
+        );
         Ok(TableInfo {
             id: table_id,
             size: table_file.metadata()?.len() as _,
             level: 0,
+            range,
             filter,
             index,
         })
